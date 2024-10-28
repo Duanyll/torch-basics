@@ -13,7 +13,9 @@
                 "ms-vscode.cmake-tools",
                 "ms-vscode.cpptools",
                 "GitHub.copilot",
-                "ms-vscode.hexeditor"
+                "ms-vscode.hexeditor",
+                "ms-toolsai.jupyter",
+                "ms-toolsai.tensorboard"
             ]
         }
     },

@@ -10,6 +10,9 @@ RUN rm -f /etc/apt/sources.list.d/cuda.list \
     && rm -rf /var/lib/apt/lists/*
 
 RUN pip install -i http://mirrors.aliyun.com/pypi/simple/ --trusted-host mirrors.aliyun.com --no-cache-dir \
-    h5py einops tqdm matplotlib tensorboard torch-tb-profiler ninja scipy
+    h5py einops tqdm matplotlib tensorboard torch-tb-profiler ninja scipy ipykernel jupyter ipywidgets
 
 # Append extra packages below if needed
+
+RUN pip install -i http://mirrors.aliyun.com/pypi/simple/ --trusted-host mirrors.aliyun.com --no-cache-dir \
+    torch_optimizer pytorch-ignite opencv-python
