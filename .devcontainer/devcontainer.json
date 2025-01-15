@@ -1,9 +1,39 @@
 {
-    "build": {
-        "dockerfile": "Dockerfile",
-        "context": "."
+    "image": "pytorch/pytorch:2.5.0-cuda12.4-cudnn9-devel",
+    "features": {
+        // Uncomment the following to use a custom mirror for Ubuntu and pip
+        "ghcr.io/duanyll/devcontainer-features/mirrors:latest": {
+            "ubuntu": "https://mirrors.ustc.edu.cn/ubuntu/",
+            "pip": "https://pypi.tuna.tsinghua.edu.cn/simple"
+        },
+        // Common utilities
+        "ghcr.io/devcontainers/features/common-utils:2": {
+            "installZsh": "false",
+            "configureZshAsDefaultShell": "false",
+            "installOhMyZsh": "false",
+            "installOhMyZshConfig": "false",
+            "username": "vscode",
+            "userUid": "1000",
+            "userGid": "1000",
+            "upgradePackages": "false"
+        },
+        "ghcr.io/devcontainers-extra/features/apt-packages:1": {
+            "packages": "ffmpeg,libsm6,libxext6,libxrender-dev"
+        },
+        "ghcr.io/Duanyll/devcontainer-features/mkdirs:1": {
+            "directories": "/home/vscode/.cache,/home/vscode/.cache/huggingface"
+        }
     },
+    "overrideFeatureInstallOrder": [
+        // Uncomment the following to use a custom mirror for Ubuntu and pip
+        "ghcr.io/duanyll/devcontainer-features/mirrors:latest",
+        "ghcr.io/devcontainers/features/common-utils:2",
+        "ghcr.io/devcontainers-extra/features/apt-packages:1"
+    ],
     "customizations": {
+        "settings": {
+            "python.defaultInterpreterPath": "/opt/conda/bin/python"
+        },
         "vscode": {
             "extensions": [
                 "ms-python.python",
@@ -15,7 +45,8 @@
                 "GitHub.copilot",
                 "ms-vscode.hexeditor",
                 "ms-toolsai.jupyter",
-                "ms-toolsai.tensorboard"
+                "ms-toolsai.tensorboard",
+                "ms-python.black-formatter"
             ]
         }
     },
@@ -29,12 +60,15 @@
         "--gpus",
         "all"
     ],
+    "remoteUser": "vscode",
     "mounts": [
         // Mount the cache directory to speed up Hugging Face model downloads
-        "type=volume,source=hfhub_cache,target=/root/.cache/huggingface/hub/"
+        "type=volume,source=hfhub_cache,target=/home/vscode/.cache/huggingface/hub/",
+        "type=bind,source=/home/duanyll/comfyui/storage/ComfyUI/models/,target=/models"
     ],
     "shutdownAction": "none",
     "hostRequirements": {
         "gpu": true
-    }
+    },
+    "updateContentCommand": "pip install --user -r requirements.txt"
 }
