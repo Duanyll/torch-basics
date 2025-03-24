@@ -17,6 +17,7 @@ ipywidgets>=8.1.5
 torch_optimizer
 pytorch-ignite
 opencv-python
+kornia
 diffusers
 transformers
 timm

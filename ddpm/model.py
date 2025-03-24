@@ -127,7 +127,7 @@ class DDPM:
                 
         writer.close()
         
-    def ddpm_sample(self, n, z=None, t0=0, use_ema=True):
+    def ddpm_sample(self, n, z=None, t0=1, use_ema=True):
         self.ema_model.eval()
         with torch.no_grad():
             if z is None:
@@ -135,14 +135,13 @@ class DDPM:
             else:
                 z = z.clone().detach().cuda()
             
-            for t in tqdm(range(t0, self.T), desc='Sampling'):
-                t = self.T - t - 1
+            for t in tqdm(range(round(self.T * t0) - 1, -1, -1), desc='Sampling'):
                 t = torch.full((n,), t, device='cuda')
                 noise_pred = self.ema_model(z, t) if use_ema else self.unet(z, t)
-                alpha = self._alpha[t][:, None, None, None]
-                beta = self._beta[t][:, None, None, None]
-                bar_beta = self._bar_beta[t][:, None, None, None]
-                sigma = self._sigma[t][:, None, None, None]
+                alpha = self._alpha[t]
+                beta = self._beta[t]
+                bar_beta = self._bar_beta[t]
+                sigma = self._sigma[t]
                 
                 # DDPM sampling
                 z -= beta**2 / bar_beta * noise_pred
@@ -152,6 +151,40 @@ class DDPM:
             x = z.clamp(-1, 1)
         self.ema_model.train()
         return x
+    
+    def ddim_sample(self, n, z=None, t0=0, stride=20, eta=1, use_ema=True):
+        self.ema_model.eval()
+        with torch.no_grad():
+            if z is None:
+                z = torch.randn(n, 3, 128, 128, device='cuda')
+            else:
+                z = z.clone().detach().cuda()
+            
+            steps = range(round(self.T * t0) - 1, -1, -stride)
+            bar_alpha = self._bar_alpha[steps]
+            bar_alpha_pre = torch.cat([torch.ones(1, device='cuda'), bar_alpha[:-1]])
+            alpha = bar_alpha / bar_alpha_pre
+             
+            bar_beta = torch.sqrt(1 - bar_alpha ** 2)
+            bar_beta_pre = torch.sqrt(1 - bar_alpha_pre ** 2)
+            beta = bar_beta / bar_beta_pre
+            
+            sigma = beta * torch.sqrt(1 - alpha ** 2) * eta
+            epsilon = bar_beta - alpha * np.sqrt(bar_beta_pre ** 2 - sigma ** 2)
+            
+            for i in tqdm(range(len(steps)), desc='Sampling'):
+                t = steps[i]
+                t = torch.full((n,), t, device='cuda')
+                noise_pred = self.ema_model(z, t) if use_ema else self.unet(z, t)
+                
+                z -= epsilon[i] * noise_pred
+                z /= alpha[i]
+                z += sigma[i] * torch.randn_like(z)
+                
+            x = z.clamp(-1, 1)
+        self.ema_model.train()
+        return x
+                
                     
     def make_samples_grid(self, samples, grid_size=4):
         figure = rearrange(samples, '(gh gw) c h w -> 1 c (gh h) (gw w)', gh=grid_size, gw=grid_size)
