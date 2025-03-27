@@ -101,3 +101,35 @@ def apply_offload_all_hook(pipe, execution_device, offload_device, submodules):
         add_hook_to_module(module, hook, append=True)
         user_hook = UserOffloadAllHook(module, hook)
         pipe._all_hooks.append(user_hook)
+
+
+class MoveDeviceHook(ModelHook):
+    r"""
+    A module hook that moves the input tensor to the given device before the forward pass.
+    """
+    
+    def __init__(self, device):
+        r"""
+        Args:
+            device (str):
+                The device to move the input tensor to.
+        """
+        super().__init__()
+        self.device = torch.device(device)
+        
+    def init_hook(self, module):
+        logger.info(f"Initalizing MoveDeviceHook for {module.__class__.__name__}, moving to {self.device}")
+        return module.to(self.device)
+        
+    def pre_forward(self, module, *args, **kwargs):
+        return send_to_device(args, self.device), send_to_device(kwargs, self.device)
+        
+        
+def apply_move_device_hook(module, device):
+    r"""
+    Install the `MoveDeviceHook` to the given module. This hook will move the input tensor to the given device before the
+    forward pass.
+    """
+    hook = MoveDeviceHook(device)
+    add_hook_to_module(module, hook, append=True)
+    

@@ -10,6 +10,7 @@ from utils import (
     LayerwiseUpcastingGranularity,
     apply_layerwise_upcasting,
     apply_offload_all_hook,
+    apply_move_device_hook
 )
 
 def create_low_vram_flux_pipeline(
@@ -17,8 +18,9 @@ def create_low_vram_flux_pipeline(
     repo="black-forest-labs/FLUX.1-dev",
     dtype=torch.bfloat16,
     storage_dtype=torch.float8_e4m3fn,
-) -> FluxPipeline:
-    pipe = FluxPipeline.from_pretrained(repo, torch_dtype=dtype)
+    factory=FluxPipeline
+):
+    pipe = factory.from_pretrained(repo, torch_dtype=dtype)
     apply_layerwise_upcasting(
         pipe.transformer,
         storage_dtype=storage_dtype,
@@ -31,9 +33,9 @@ def create_low_vram_flux_pipeline(
         offload_device="cpu",
         submodules=["text_encoder", "text_encoder_2", "transformer"],
     )
-    pipe.vae.to(device)
+    apply_move_device_hook(pipe.vae, device)
     pipe.transformer.enable_gradient_checkpointing()
-    
+    pipe.maybe_free_model_hooks = lambda: None # No need to free hooks
     return pipe
 
 
