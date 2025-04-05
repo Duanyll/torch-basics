@@ -1,3 +1,4 @@
 {
-    "cmake.sourceDirectory": "/workspaces/torch-basics/kmcuda/src"
+    "cmake.sourceDirectory": "/workspaces/torch-basics/kmcuda/src",
+    "python.analysis.typeCheckingMode": "basic"
 }

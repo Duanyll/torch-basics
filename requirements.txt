@@ -13,15 +13,23 @@ ipykernel
 jupyter>=1.1.1
 nbformat>=4.2.0
 ipywidgets>=8.1.5
+pydantic
+aim
+rich
 
+sentencepiece
 torch_optimizer
 pytorch-ignite
 opencv-python
 kornia
-diffusers
-transformers
-timm
 Pillow
+aim
+
 optimum-quanto
 accelerate
-sentencepiece
+transformers
+diffusers
+peft
+datasets
+timm
+bitsandbytes
