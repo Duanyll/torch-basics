@@ -2,6 +2,7 @@ from torch.utils.data import Dataset
 from datasets import load_dataset
 
 from .mock import MockDataset
+from .lmdb import LMDBDataset
 
 def parse_dataset(dataset_config) -> Dataset:
     if not isinstance(dataset_config, dict):
@@ -21,5 +22,7 @@ def parse_dataset(dataset_config) -> Dataset:
             )
     elif dataset_type == "mock":
         return MockDataset(**dataset_config)
+    elif dataset_type == "lmdb":
+        return LMDBDataset(**dataset_config)
     else:
         raise ValueError(f"Unsupported dataset type: {dataset_type}")

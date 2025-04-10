@@ -51,8 +51,8 @@ class FluxFinetuner(BaseModel):
 
     # --- Loading and Saving ---
     output_dir: str
-    logging_dir: str = "./logs"
-    exprtiment_name: str = "flux_control"
+    logging_dir: str = "./runs"
+    experiment_name: str | None = None
     pretrained_model_id: str = "black-forest-labs/FLUX.1-dev"
     resume_from_checkpoint: str | None = None
     checkpointing_steps: int = 500
@@ -243,13 +243,16 @@ class FluxFinetuner(BaseModel):
         else:
             transformers.utils.logging.set_verbosity_error()
             diffusers.utils.logging.set_verbosity_error()
+        experiment_name = (
+            os.path.basename(self.output_dir)
+            if self.experiment_name is None
+            else self.experiment_name
+        )
         self._accelerator.init_trackers(
-            self.exprtiment_name,
+            experiment_name,
             config=flatten_dict(config),
         )
         if self._accelerator.is_main_process:
-            os.makedirs(self.output_dir, exist_ok=True)
-            os.makedirs(self.logging_dir, exist_ok=True)
             self._info(f"Saving logs to {self.logging_dir}")
             self._info(f"Saving model to {self.output_dir}")
             self._info(f"Full config: {config}")
@@ -257,7 +260,7 @@ class FluxFinetuner(BaseModel):
     def _info(self, message: str):
         if self._accelerator.is_main_process:
             logger.info(message)
-            
+
     def _debug(self, message: str):
         if self._accelerator.is_main_process:
             logger.debug(message)
@@ -301,7 +304,7 @@ class FluxFinetuner(BaseModel):
         )
 
         self._info(f"Saved model to {output_dir}")
-        
+
     def _load_model_hook(self, models, input_dir):
         if self._accelerator.distributed_type == DistributedType.DEEPSPEED:
             model = self._make_transformer()
@@ -495,9 +498,9 @@ class FluxFinetuner(BaseModel):
         if self._accelerator.is_main_process:
             self._save_model_hook([transformer], [], self.output_dir)
             self._info(f"Final model saved to {self.output_dir}")
-            
+
     def _inspect_dtype(self, transformer):
-        lora_layer: Any = transformer.transformer_blocks[0].attn.to_q # type: ignore
+        lora_layer: Any = transformer.transformer_blocks[0].attn.to_q  # type: ignore
         self._info(f"Diffusers dtype: {transformer.dtype}")
         self._info(f"Base layer dtype: {lora_layer.base_layer.weight.dtype}")
         self._info(f"LoRA layer dtype: {lora_layer.lora_A.default.weight.dtype}")
@@ -509,7 +512,7 @@ class FluxFinetuner(BaseModel):
         self._accelerator.register_load_state_pre_hook(self._load_model_hook)
         self._accelerator.register_save_state_pre_hook(self._save_model_hook)
         self._optimize_model(transformer)
-        
+
         optimizer = self._make_optimizer(transformer)
         dataloader = self._make_dataloader()
         self._calculate_real_train_steps(dataloader)
