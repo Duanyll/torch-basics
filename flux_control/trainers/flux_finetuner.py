@@ -3,7 +3,7 @@ import os
 import shutil
 import logging
 import random
-from typing import Annotated, Literal, cast
+from typing import Annotated, Literal, Any, cast
 
 import torch
 from rich.progress import (
@@ -14,6 +14,7 @@ from rich.progress import (
     TimeRemainingColumn,
     MofNCompleteColumn,
 )
+from rich.logging import RichHandler
 from pydantic import BaseModel, PlainValidator, model_validator
 from aim import Run
 from accelerate import Accelerator, DistributedType
@@ -31,6 +32,7 @@ from diffusers.utils.torch_utils import is_compiled_module
 from diffusers.optimization import get_scheduler
 
 from ..adapters import BaseAdapter, parse_adapter_config
+from ..datasets import parse_dataset
 from ..utils.common import flatten_dict
 from ..utils.upcasting import (
     apply_layerwise_upcasting,
@@ -39,20 +41,23 @@ from ..utils.upcasting import (
 )
 
 
+logger = get_logger(__name__)
+
+
 class FluxFinetuner(BaseModel):
     adapter: Annotated[BaseAdapter, PlainValidator(parse_adapter_config)]
+    dataset: dict[str, Any]
+    dataloader_num_workers: int = 0
 
     # --- Loading and Saving ---
     output_dir: str
-    logging_dir: str = "."
-    """
-    Directory to save logs, relative to the output_dir.
-    """
+    logging_dir: str = "./logs"
     exprtiment_name: str = "flux_control"
     pretrained_model_id: str = "black-forest-labs/FLUX.1-dev"
     resume_from_checkpoint: str | None = None
     checkpointing_steps: int = 500
     checkpointings_limit: int | None = None
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     _resume_checkpoint_path: str | None = None
     _resume_checkpoint_step: int = 0
     """
@@ -149,7 +154,7 @@ class FluxFinetuner(BaseModel):
     """
     Number of total training steps. If None, train_epochs must be set.
     """
-    train_epochs: int | None = 1
+    train_epochs: int | None = None
     """
     Number of total training epochs. If None, train_steps must be set.
     """
@@ -193,11 +198,12 @@ class FluxFinetuner(BaseModel):
 
     max_grad_norm: float = 1.0
 
+    _accelerator: Accelerator
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
-        self.logger = get_logger(__name__)
-        self.accelerator = self._make_accelerator()
+        self._accelerator = self._make_accelerator()
         self._initialize_logging(kwargs)
 
         self._weight_dtype = (
@@ -214,38 +220,47 @@ class FluxFinetuner(BaseModel):
             log_with="aim",
             project_config=ProjectConfiguration(
                 project_dir=self.output_dir,
-                logging_dir=os.path.join(self.output_dir, self.logging_dir),
+                logging_dir=self.logging_dir,
             ),
         )
 
     def _initialize_logging(self, config: dict):
+        rich_handler = RichHandler()
+        transformers.utils.logging.disable_default_handler()
+        transformers.utils.logging.disable_progress_bar()
+        transformers.utils.logging.add_handler(rich_handler)
+        diffusers.utils.logging.disable_default_handler()
+        diffusers.utils.logging.add_handler(rich_handler)
+        diffusers.utils.logging.disable_progress_bar()
         logging.basicConfig(
-            format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
-            datefmt="%m/%d/%Y %H:%M:%S",
-            # DEBUG, INFO, WARNING, ERROR, CRITICAL
-            level=logging.INFO,
+            level=self.log_level,
+            handlers=[rich_handler],
         )
-        self.logger.info(self.accelerator.state, main_process_only=False)
-        if self.accelerator.is_local_main_process:
+        logger.info(self._accelerator.state, main_process_only=False)  # type: ignore
+        if self._accelerator.is_local_main_process:
             transformers.utils.logging.set_verbosity_warning()
             diffusers.utils.logging.set_verbosity_info()
         else:
             transformers.utils.logging.set_verbosity_error()
             diffusers.utils.logging.set_verbosity_error()
-        self.accelerator.init_trackers(
+        self._accelerator.init_trackers(
             self.exprtiment_name,
             config=flatten_dict(config),
         )
-        if self.accelerator.is_main_process:
+        if self._accelerator.is_main_process:
             os.makedirs(self.output_dir, exist_ok=True)
             os.makedirs(self.logging_dir, exist_ok=True)
-            self._log(f"Saving logs to {self.logging_dir}")
-            self._log(f"Saving model to {self.output_dir}")
-            self._log(f"Full config: {config}")
+            self._info(f"Saving logs to {self.logging_dir}")
+            self._info(f"Saving model to {self.output_dir}")
+            self._info(f"Full config: {config}")
 
-    def _log(self, message: str):
-        if self.accelerator.is_main_process:
-            self.logger.info(message)
+    def _info(self, message: str):
+        if self._accelerator.is_main_process:
+            logger.info(message)
+            
+    def _debug(self, message: str):
+        if self._accelerator.is_main_process:
+            logger.debug(message)
 
     def _make_transformer(self) -> FluxTransformer2DModel:
         transformer = cast(
@@ -259,18 +274,18 @@ class FluxFinetuner(BaseModel):
         transformer.requires_grad_(False)
         self.adapter.install_modules(transformer)
         cast_trainable_parameters(transformer, self._trainable_dtype)
-        self._log(
+        self._info(
             f"Transformer model created with {self.pretrained_model_id} and {self.adapter.__class__.__name__}"
         )
         return transformer
 
     def _unwrap_model(self, model):
-        model = self.accelerator.unwrap_model(model)
+        model = self._accelerator.unwrap_model(model)
         model = model._orig_mod if is_compiled_module(model) else model
         return model
 
     def _save_model_hook(self, models, weights, output_dir):
-        if not self.accelerator.is_main_process:
+        if not self._accelerator.is_main_process:
             return
 
         assert len(models) == 1
@@ -285,10 +300,10 @@ class FluxFinetuner(BaseModel):
             output_dir, transformer_lora_layers=layers_to_save
         )
 
-        self._log(f"Saved model to {output_dir}")
-
+        self._info(f"Saved model to {output_dir}")
+        
     def _load_model_hook(self, models, input_dir):
-        if self.accelerator.distributed_type == DistributedType.DEEPSPEED:
+        if self._accelerator.distributed_type == DistributedType.DEEPSPEED:
             model = self._make_transformer()
         else:
             assert len(models) == 1
@@ -298,7 +313,7 @@ class FluxFinetuner(BaseModel):
         lora_state_dict = cast(dict, FluxControlPipeline.lora_state_dict(input_dir))
         self.adapter.load_model(model, lora_state_dict)
         cast_trainable_parameters(model, self._trainable_dtype)
-        self._log(f"Loaded model from {input_dir}")
+        self._info(f"Loaded model from {input_dir}")
 
     def _optimize_model(self, transformer):
         if self.base_precision == "fp8-upcast":
@@ -308,15 +323,15 @@ class FluxFinetuner(BaseModel):
                 compute_dtype=self._weight_dtype,
                 granularity=LayerwiseUpcastingGranularity.PYTORCH_LAYER,
             )
-            self._log(f"Applied layerwise upcasting.")
+            self._info(f"Applied layerwise upcasting.")
 
         if self.gradient_checkpointing:
             transformer.enable_gradient_checkpointing()
-            self._log(f"Gradient checkpointing enabled.")
+            self._info(f"Gradient checkpointing enabled.")
 
         if self.allow_tf32:
             torch.backends.cuda.matmul.allow_tf32 = True
-            self._log(f"TF32 enabled.")
+            self._info(f"TF32 enabled.")
 
     def _make_optimizer(self, transformer) -> torch.optim.Optimizer:
         learn_rate = (
@@ -324,7 +339,7 @@ class FluxFinetuner(BaseModel):
                 self.learning_rate
                 * self.gradient_accumulation_steps
                 * self.train_batch_size
-                * self.accelerator.num_processes
+                * self._accelerator.num_processes
             )
             if self.scale_lr
             else self.learning_rate
@@ -357,14 +372,21 @@ class FluxFinetuner(BaseModel):
         )
 
         num_trainable_params = sum(p.numel() for p in parameters)
-        self._log(
+        self._info(
             f"{optimzer.__class__.__name__} created with {num_trainable_params} trainable parameters"
         )
         return optimzer
 
     def _make_dataloader(self) -> torch.utils.data.DataLoader:
-        # TODO: Implement dataloader
-        raise NotImplementedError("Dataloader not implemented")
+        dataset = parse_dataset(self.dataset)
+        dataloader = torch.utils.data.DataLoader(
+            dataset,
+            batch_size=self.train_batch_size,
+            shuffle=True,
+            num_workers=self.dataloader_num_workers,
+        )
+        self._info(f"DataLoader created with {len(dataset)} samples")  # type: ignore
+        return dataloader
 
     def _calculate_real_train_steps(self, dataloader):
         if self.train_epochs is not None:
@@ -378,12 +400,12 @@ class FluxFinetuner(BaseModel):
         lr_scheduler = get_scheduler(
             self.lr_scheduler,
             optimizer=optimizer,
-            num_warmup_steps=self.lr_warmup_steps * self.accelerator.num_processes,
-            num_training_steps=self._train_steps * self.accelerator.num_processes,
+            num_warmup_steps=self.lr_warmup_steps * self._accelerator.num_processes,
+            num_training_steps=self._train_steps * self._accelerator.num_processes,
             num_cycles=self.lr_num_cycles,
             power=self.lr_power,
         )
-        self._log(f"Created {self.lr_scheduler.__class__.__name__} scheduler")
+        self._info(f"Created {lr_scheduler.__class__.__name__} scheduler")
         return lr_scheduler
 
     def _parse_checkpoint_step(self, checkpoint: str) -> int:
@@ -395,8 +417,8 @@ class FluxFinetuner(BaseModel):
     def _try_resume_from_checkpoint(self) -> int:
         if self._resume_checkpoint_path is None:
             return 0
-        self.accelerator.load_state(self._resume_checkpoint_path)
-        self._log(f"Resumed from checkpoint {self._resume_checkpoint_path}")
+        self._accelerator.load_state(self._resume_checkpoint_path)
+        self._info(f"Resumed from checkpoint {self._resume_checkpoint_path}")
         return self._resume_checkpoint_step
 
     def _make_progress_bar(self):
@@ -455,53 +477,62 @@ class FluxFinetuner(BaseModel):
         for checkpoint in checkpoints[self.checkpointings_limit :]:
             checkpoint_path = os.path.join(self.output_dir, checkpoint)
             shutil.rmtree(checkpoint_path)
-            self._log(f"Removed checkpoint {checkpoint_path}")
+            self._info(f"Removed checkpoint {checkpoint_path}")
 
     def _save_checkpoint(self, global_step):
-        if self.accelerator.is_main_process:
+        if self._accelerator.is_main_process:
             self._try_remove_extra_checkpoints()
 
         if (
-            self.accelerator.is_main_process
-            or self.accelerator.distributed_type == DistributedType.DEEPSPEED
+            self._accelerator.is_main_process
+            or self._accelerator.distributed_type == DistributedType.DEEPSPEED
         ):
             save_path = os.path.join(self.output_dir, f"checkpoint-{global_step}")
-            self.accelerator.save_state(save_path)
-            self._log(f"Saved checkpoint to {save_path}")
+            self._accelerator.save_state(save_path)
+            self._info(f"Saved checkpoint to {save_path}")
 
     def _final_save(self, transformer):
-        if self.accelerator.is_main_process:
+        if self._accelerator.is_main_process:
             self._save_model_hook([transformer], [], self.output_dir)
-            self._log(f"Final model saved to {self.output_dir}")
+            self._info(f"Final model saved to {self.output_dir}")
+            
+    def _inspect_dtype(self, transformer):
+        lora_layer: Any = transformer.transformer_blocks[0].attn.to_q # type: ignore
+        self._info(f"Diffusers dtype: {transformer.dtype}")
+        self._info(f"Base layer dtype: {lora_layer.base_layer.weight.dtype}")
+        self._info(f"LoRA layer dtype: {lora_layer.lora_A.default.weight.dtype}")
 
     def train(self):
         set_seed(self.seed)
 
         transformer = self._make_transformer()
-        self.accelerator.register_load_state_pre_hook(self._load_model_hook)
-        self.accelerator.register_save_state_pre_hook(self._save_model_hook)
+        self._accelerator.register_load_state_pre_hook(self._load_model_hook)
+        self._accelerator.register_save_state_pre_hook(self._save_model_hook)
         self._optimize_model(transformer)
-
+        
         optimizer = self._make_optimizer(transformer)
         dataloader = self._make_dataloader()
         self._calculate_real_train_steps(dataloader)
         lr_scheduler = self._make_lr_scheduler(optimizer)
 
-        transformer, optimizer, dataloader, lr_scheduler = self.accelerator.prepare(
+        transformer, optimizer, dataloader, lr_scheduler = self._accelerator.prepare(
             transformer, optimizer, dataloader, lr_scheduler
         )
 
         global_step = self._try_resume_from_checkpoint()
         starting_epoch = global_step // len(dataloader)
-        self._log(f"Starting training from epoch {starting_epoch}")
+        self._info(f"Starting training from epoch {starting_epoch}")
 
-        if self.accelerator.is_main_process:
+        if self._accelerator.is_main_process:
             progress = self._make_progress_bar()
             progress.start()
             task = progress.add_task(
                 description="[bold blue]Training",
                 total=self._train_steps,
                 completed=global_step,
+                epoch=starting_epoch,
+                loss=0,
+                lr=0,
             )
 
         for epoch in range(starting_epoch, self._train_epochs):
@@ -510,12 +541,12 @@ class FluxFinetuner(BaseModel):
                 if global_step > self._train_steps:
                     break
 
-                with self.accelerator.accumulate(transformer):
+                with self._accelerator.accumulate(transformer):
                     loss = self._train_step(transformer, batch)
-                    self.accelerator.backward(loss)
+                    self._accelerator.backward(loss)
 
-                    if self.accelerator.sync_gradients:
-                        self.accelerator.clip_grad_norm_(
+                    if self._accelerator.sync_gradients:
+                        self._accelerator.clip_grad_norm_(
                             transformer.parameters(), self.max_grad_norm
                         )
 
@@ -528,17 +559,17 @@ class FluxFinetuner(BaseModel):
                     "loss": loss.detach().item(),
                     "lr": lr_scheduler.get_last_lr()[0],
                 }
-                self.accelerator.log(logs, step=global_step)
-                if self.accelerator.is_main_process:
-                    progress.update(task, advance=1, fields={"epoch": epoch, **logs})
+                self._accelerator.log(logs, step=global_step)
+                if self._accelerator.is_main_process:
+                    progress.update(task, advance=1, epoch=epoch, **logs)
 
                 if global_step % self.checkpointing_steps == 0:
                     self._save_checkpoint(global_step)
-                    self._log(f"Checkpoint saved at step {global_step}")
+                    self._info(f"Checkpoint saved at step {global_step}")
 
-        if self.accelerator.is_main_process:
+        if self._accelerator.is_main_process:
             progress.stop()
 
         self._final_save(transformer)
-        self._log("Training finished")
-        self.accelerator.end_training()
+        self._info("Training finished")
+        self._accelerator.end_training()

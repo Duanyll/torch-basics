@@ -1,6 +1,7 @@
 from torch.utils.data import Dataset
 from datasets import load_dataset
 
+from .mock import MockDataset
 
 def parse_dataset(dataset_config) -> Dataset:
     if not isinstance(dataset_config, dict):
@@ -18,5 +19,7 @@ def parse_dataset(dataset_config) -> Dataset:
             raise ValueError(
                 "The loaded dataset is not of type Dataset. Make sure you have passed the correct parameters."
             )
+    elif dataset_type == "mock":
+        return MockDataset(**dataset_config)
     else:
-        raise ValueError(f"Unknown dataset type: {dataset_type}.")
+        raise ValueError(f"Unsupported dataset type: {dataset_type}")

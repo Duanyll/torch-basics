@@ -81,9 +81,9 @@ class BaseAdapter(BaseModel):
         """
         b, c, h, w = batch["noisy_latents"].shape
 
-        if batch["txt_ids"] is None:
+        if not "txt_ids" in batch:
             batch["txt_ids"] = self._make_txt_ids(batch["prompt_embeds"])
-        if batch["img_ids"] is None:
+        if not "img_ids" in batch:
             batch["img_ids"] = self._make_img_ids(batch["noisy_latents"])
 
         model_pred = transformer(
@@ -163,7 +163,7 @@ class BaseAdapter(BaseModel):
     def _make_txt_ids(self, prompt_embeds):
         b, n, d = prompt_embeds.shape
         return torch.zeros(
-            (b, n, 3), dtype=prompt_embeds.dtype, device=prompt_embeds.device
+            (n, 3), dtype=prompt_embeds.dtype, device=prompt_embeds.device
         )
 
     def _make_img_ids(self, pixel_latents):
@@ -179,7 +179,7 @@ class BaseAdapter(BaseModel):
         img_ids[:, :, 2] = img_ids[:, :, 2] + torch.arange(
             w_len, dtype=img_ids.dtype, device=img_ids.device
         ).reshape(1, w_len)
-        img_ids = repeat(img_ids, "h w c -> b (h w) c", b=b)
+        img_ids = rearrange(img_ids, "h w c -> (h w) c")
         return img_ids
 
     def _pack_latents(self, latents):

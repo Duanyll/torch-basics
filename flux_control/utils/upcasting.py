@@ -1,5 +1,10 @@
-import torch
 import re
+from enum import Enum
+from typing import Any, Dict, List, Tuple, Type, cast
+
+import torch
+import torch.nn as nn
+from torch.utils._python_dispatch import is_traceable_wrapper_subclass  # type: ignore[import]
 from accelerate.hooks import (
     ModelHook,
     clear_device_cache,
@@ -18,12 +23,103 @@ from diffusers.models.embeddings import (
     PixArtAlphaTextProjection,
     TimestepEmbedding,
 )
-from enum import Enum
-from typing import Any, Dict, List, Tuple, Type
-import warnings
 from diffusers.utils import logging
 
 logger = logging.get_logger(__name__)
+
+
+# Copied from torch.nn.Module._apply
+# Modified to distinguish between parameters and their gradients
+def _module_apply_advanced(module, fn, recurse=True):
+    if recurse:
+        for module in module.children():
+            _module_apply_advanced(module, fn)
+
+    def compute_should_use_set_data(tensor, tensor_applied):
+        if torch._has_compatible_shallow_copy_type(tensor, tensor_applied):
+            # If the new tensor has compatible tensor type as the existing tensor,
+            # the current behavior is to change the tensor in-place using `.data =`,
+            # and the future behavior is to overwrite the existing tensor. However,
+            # changing the current behavior is a BC-breaking change, and we want it
+            # to happen in future releases. So for now we introduce the
+            # `torch.__future__.get_overwrite_module_params_on_conversion()`
+            # global flag to let the user control whether they want the future
+            # behavior of overwriting the existing tensor or not.
+            return not torch.__future__.get_overwrite_module_params_on_conversion()
+        else:
+            return False
+
+    should_use_swap_tensors = torch.__future__.get_swap_module_params_on_conversion()
+
+    for key, param in module._parameters.items():
+        if param is None:
+            continue
+        # Tensors stored in modules are graph leaves, and we don't want to
+        # track autograd history of `param_applied`, so we have to use
+        # `with torch.no_grad():`
+        with torch.no_grad():
+            param_applied = fn(param, False)
+        p_should_use_set_data = compute_should_use_set_data(param, param_applied)
+
+        # subclasses may have multiple child tensors so we need to use swap_tensors
+        p_should_use_swap_tensors = (
+            should_use_swap_tensors or is_traceable_wrapper_subclass(param_applied)
+        )
+
+        param_grad = param.grad
+        if p_should_use_swap_tensors:
+            try:
+                if param_grad is not None:
+                    # Accessing param.grad makes its at::Tensor's use_count 2, which will prevent swapping.
+                    # Decrement use count of the gradient by setting to None
+                    param.grad = None
+                param_applied = torch.nn.Parameter(
+                    cast(Any, param_applied), requires_grad=param.requires_grad
+                )
+                torch.utils.swap_tensors(param, param_applied)
+            except Exception as e:
+                if param_grad is not None:
+                    param.grad = param_grad
+                raise RuntimeError(
+                    f"_apply(): Couldn't swap {module._get_name()}.{key}"
+                ) from e
+            out_param = param
+        elif p_should_use_set_data:
+            param.data = param_applied
+            out_param = param
+        else:
+            assert isinstance(param, nn.Parameter)
+            assert param.is_leaf
+            out_param = nn.Parameter(cast(Any, param_applied), param.requires_grad)
+            module._parameters[key] = out_param
+
+        if param_grad is not None:
+            with torch.no_grad():
+                grad_applied = fn(param_grad, True)
+            g_should_use_set_data = compute_should_use_set_data(
+                param_grad, grad_applied
+            )
+            if p_should_use_swap_tensors:
+                grad_applied.requires_grad_(param_grad.requires_grad)
+                try:
+                    torch.utils.swap_tensors(param_grad, grad_applied)
+                except Exception as e:
+                    raise RuntimeError(
+                        f"_apply(): Couldn't swap {module._get_name()}.{key}.grad"
+                    ) from e
+                out_param.grad = param_grad
+            elif g_should_use_set_data:
+                assert out_param.grad is not None
+                out_param.grad.data = grad_applied
+            else:
+                assert param_grad.is_leaf
+                out_param.grad = grad_applied.requires_grad_(param_grad.requires_grad)
+
+    for key, buf in module._buffers.items():
+        if buf is not None:
+            module._buffers[key] = fn(buf)
+
+    return module
 
 
 class LayerwiseUpcastingHook(ModelHook):
@@ -44,33 +140,33 @@ class LayerwiseUpcastingHook(ModelHook):
         self.compute_dtype = compute_dtype
         self.ignore_trainable = ignore_trainable
 
-    def _cast_storage(self, x: torch.Tensor) -> torch.Tensor:
-        if self.ignore_trainable and x.requires_grad:
+    def _cast_storage(self, x: torch.Tensor, is_grad: bool = False) -> torch.Tensor:
+        if (self.ignore_trainable and x.requires_grad) or is_grad:
             return x
         if x.is_floating_point():
             return x.to(dtype=self.storage_dtype)
         return x
 
-    def _cast_compute(self, x: torch.Tensor) -> torch.Tensor:
-        if self.ignore_trainable and x.requires_grad:
+    def _cast_compute(self, x: torch.Tensor, is_grad: bool = False) -> torch.Tensor:
+        if (self.ignore_trainable and x.requires_grad) or is_grad:
             return x
         if x.is_floating_point():
             return x.to(dtype=self.compute_dtype)
         return x
 
     def init_hook(self, module: torch.nn.Module):
-        module._apply(self._cast_storage)
+        _module_apply_advanced(module, self._cast_storage)
         return module
 
     def pre_forward(self, module: torch.nn.Module, *args, **kwargs):
-        module._apply(self._cast_compute)
+        _module_apply_advanced(module, self._cast_compute)
         # How do we account for LongTensor, BoolTensor, etc.?
         # args = tuple(align_maybe_tensor_dtype(arg, self.compute_dtype) for arg in args)
         # kwargs = {k: align_maybe_tensor_dtype(v, self.compute_dtype) for k, v in kwargs.items()}
         return args, kwargs
 
     def post_forward(self, module: torch.nn.Module, output):
-        module._apply(self._cast_storage)
+        _module_apply_advanced(module, self._cast_storage)
         return output
 
 
