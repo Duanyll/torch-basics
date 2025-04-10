@@ -1,0 +1,33 @@
+output_dir = "./runs/peft_lora_285058"
+logging_dir = "./runs"
+experiment_name = "peft_lora_285058"
+checkpointing_steps = 200
+sample_steps = 200
+sample_batch_pickle = "data/285058_sample.pt"
+# log_level = "DEBUG"
+
+accelerator_amp_mode = "no"
+base_precision = "fp8-upcast"
+trainable_precision = "bf16"
+allow_tf32 = true
+gradient_checkpointing = true
+use_8bit_adam = false
+
+seed = 42
+gradient_accumulation_steps = 4
+train_steps = 2000
+learning_rate = 4e-4
+lr_scheduler = "constant"
+weighting_scheme = "logit_normal"
+
+[dataset]
+type = "lmdb"
+path = "./data/285058.lmdb"
+
+[adapter]
+type = "peft_lora"
+rank = 8
+
+[sampler]
+seed = 42
+vae_on_cpu = false

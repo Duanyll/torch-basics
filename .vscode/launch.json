@@ -9,6 +9,17 @@
             "type": "debugpy",
             "request": "launch",
             "module": "ddpm.train"
+        },
+        {
+            "name": "Python Debugger: train_lora",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "accelerate.commands.launch",
+            "args": [
+                "-m",
+                "flux_control.scripts.train_lora",
+                "flux_control/configs/peft_lora.toml"
+            ]
         }
     ]
 }

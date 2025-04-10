@@ -150,16 +150,6 @@ class BaseAdapter(BaseModel):
         ) # Must use float() here
         return loss
 
-    def prepare_batch_for_inference(self, batch: dict) -> dict:
-        """
-        Prepare the batch for inference. This is called before entering the sampling loop.
-        May do preprocessing like VAE and T5 encoding internally.
-
-        :param batch: The input batch containing the data. Keys are defined by implementation.
-        :return: The prepared batch.
-        """
-        return batch
-
     def _make_txt_ids(self, prompt_embeds):
         b, n, d = prompt_embeds.shape
         return torch.zeros(

@@ -3,8 +3,10 @@ import os
 import shutil
 import logging
 import random
+import pickle
 from typing import Annotated, Literal, Any, cast
 
+import aim
 import torch
 from rich.progress import (
     Progress,
@@ -16,7 +18,6 @@ from rich.progress import (
 )
 from rich.logging import RichHandler
 from pydantic import BaseModel, PlainValidator, model_validator
-from aim import Run
 from accelerate import Accelerator, DistributedType
 from accelerate.utils import ProjectConfiguration, set_seed
 from accelerate.logging import get_logger
@@ -39,13 +40,41 @@ from ..utils.upcasting import (
     cast_trainable_parameters,
     LayerwiseUpcastingGranularity,
 )
+from .sampler import FluxSampler
 
 
 logger = get_logger(__name__)
 
 
+class FluxFinetunerProgress(Progress):
+    def get_renderables(self):
+        for task in self.tasks:
+            if task.fields.get("progress_type") == "train":
+                self.columns = (
+                    TextColumn("[progress.description]{task.description}"),
+                    TextColumn("• Epoch: {task.fields[epoch]}"),
+                    TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+                    BarColumn(),
+                    MofNCompleteColumn(),
+                    TimeElapsedColumn(),
+                    TimeRemainingColumn(),
+                    TextColumn("• Loss: {task.fields[loss]:.4f}"),
+                    TextColumn("• LR: {task.fields[lr]:.6f}"),
+                )
+            elif task.fields.get("progress_type") == "sample":
+                self.columns = (
+                    TextColumn("[progress.description]{task.description}"),
+                    BarColumn(),
+                    MofNCompleteColumn(),
+                    TimeElapsedColumn(),
+                    TimeRemainingColumn(),
+                )
+            yield self.make_tasks_table([task])
+
+
 class FluxFinetuner(BaseModel):
     adapter: Annotated[BaseAdapter, PlainValidator(parse_adapter_config)]
+    sampler: FluxSampler
     dataset: dict[str, Any]
     dataloader_num_workers: int = 0
 
@@ -56,10 +85,13 @@ class FluxFinetuner(BaseModel):
     pretrained_model_id: str = "black-forest-labs/FLUX.1-dev"
     resume_from_checkpoint: str | None = None
     checkpointing_steps: int = 500
-    checkpointings_limit: int | None = None
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+    sample_steps: int = 50
+    sample_batch_pickle: str | None = None
+    checkpointings_limit: int | None = None
     _resume_checkpoint_path: str | None = None
     _resume_checkpoint_step: int = 0
+    _sample_batch: dict[str, dict] | None = None
     """
     Path to the checkpoint to resume from, relative to the output_dir. Will try to read the
     training step from the file path.  If "latest", will try to find the latest checkpoint
@@ -95,6 +127,26 @@ class FluxFinetuner(BaseModel):
             raise ValueError(
                 f"Checkpointing steps {self.checkpointing_steps} must be divisible by gradient accumulation steps {self.gradient_accumulation_steps}"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _check_sample_batch(self):
+        if self.sample_batch_pickle is None:
+            return self
+        if self.sample_steps % self.gradient_accumulation_steps != 0:
+            raise ValueError(
+                f"Sample steps {self.sample_steps} must be divisible by gradient accumulation steps {self.gradient_accumulation_steps}"
+            )
+        with open(self.sample_batch_pickle, "rb") as f:
+            self._sample_batch = pickle.load(f)
+        # Make sure the sample batch is a dict of dicts
+        if not isinstance(self._sample_batch, dict):
+            raise ValueError(
+                f"Sample batch must be a dict, got {type(self._sample_batch)}"
+            )
+        for k, v in self._sample_batch.items():
+            if not isinstance(v, dict):
+                raise ValueError(f"Sample batch must be a dict of dicts, got {type(v)}")
         return self
 
     # --- Precision and Memory Optimization ---
@@ -381,7 +433,8 @@ class FluxFinetuner(BaseModel):
         return optimzer
 
     def _make_dataloader(self) -> torch.utils.data.DataLoader:
-        dataset = parse_dataset(self.dataset)
+        with self._accelerator.main_process_first():
+            dataset = parse_dataset(self.dataset)
         dataloader = torch.utils.data.DataLoader(
             dataset,
             batch_size=self.train_batch_size,
@@ -424,19 +477,6 @@ class FluxFinetuner(BaseModel):
         self._info(f"Resumed from checkpoint {self._resume_checkpoint_path}")
         return self._resume_checkpoint_step
 
-    def _make_progress_bar(self):
-        return Progress(
-            TextColumn("[progress.description]{task.description}"),
-            TextColumn("• Epoch: {task.fields[epoch]}"),
-            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-            BarColumn(),
-            MofNCompleteColumn(),
-            TimeElapsedColumn(),
-            TimeRemainingColumn(),
-            TextColumn("• Loss: {task.fields[loss]:.4f}"),
-            TextColumn("• LR: {task.fields[lr]:.6f}"),
-        )
-
     def _train_step(self, transformer, batch) -> torch.Tensor:
         batch_size = batch["clean_latents"].shape[0]
         timesteps = compute_density_for_timestep_sampling(
@@ -453,6 +493,8 @@ class FluxFinetuner(BaseModel):
                 device=batch["clean_latents"].device,
                 dtype=self._weight_dtype,
             )
+        else:
+            guidance = None
         loss = self.adapter.train_step(transformer, batch, timesteps, guidance)
         weighting = compute_loss_weighting_for_sd3(
             weighting_scheme=self.weighting_scheme, sigmas=timesteps
@@ -505,6 +547,30 @@ class FluxFinetuner(BaseModel):
         self._info(f"Base layer dtype: {lora_layer.base_layer.weight.dtype}")
         self._info(f"LoRA layer dtype: {lora_layer.lora_A.default.weight.dtype}")
 
+    def _move_batch_to_device(self, batch):
+        new_batch = {}
+        for k, v in batch.items():
+            new_batch[k] = (
+                v.to(self._accelerator.device) if isinstance(v, torch.Tensor) else v
+            )
+        return new_batch
+
+    def _sample_and_log(self, transformer, global_step, progress):
+        if self._sample_batch is None:
+            return
+        if self._accelerator.is_main_process:
+            for key, batch in self._sample_batch.items():
+                image = self.sampler.sample(
+                    transformer,
+                    self.adapter,
+                    self._move_batch_to_device(batch),
+                    progress=progress,
+                )
+                self._accelerator.log(
+                    {f"sample/{key}": aim.Image(image)}, step=global_step
+                )
+        self._accelerator.wait_for_everyone()
+
     def train(self):
         set_seed(self.seed)
 
@@ -527,8 +593,16 @@ class FluxFinetuner(BaseModel):
         self._info(f"Starting training from epoch {starting_epoch}")
 
         if self._accelerator.is_main_process:
-            progress = self._make_progress_bar()
+            if self._sample_batch is not None:
+                self.sampler.load_model(
+                    device=self._accelerator.device, dtype=self._weight_dtype
+                )
+                self._info(f"Loaded sampler model")
+            progress = FluxFinetunerProgress()
             progress.start()
+            
+            self._sample_and_log(transformer, global_step, progress)
+            
             task = progress.add_task(
                 description="[bold blue]Training",
                 total=self._train_steps,
@@ -536,6 +610,7 @@ class FluxFinetuner(BaseModel):
                 epoch=starting_epoch,
                 loss=0,
                 lr=0,
+                progress_type="train",
             )
 
         for epoch in range(starting_epoch, self._train_epochs):
@@ -563,12 +638,20 @@ class FluxFinetuner(BaseModel):
                     "lr": lr_scheduler.get_last_lr()[0],
                 }
                 self._accelerator.log(logs, step=global_step)
-                if self._accelerator.is_main_process:
-                    progress.update(task, advance=1, epoch=epoch, **logs)
 
-                if global_step % self.checkpointing_steps == 0:
+                if global_step % self.sample_steps == 0 or self.sample_steps == 1:
+                    self._sample_and_log(transformer, global_step, progress)
+                    self._info(f"Sampled at step {global_step}")
+
+                if (
+                    global_step % self.checkpointing_steps == 0
+                    or self.checkpointing_steps == 1
+                ):
                     self._save_checkpoint(global_step)
                     self._info(f"Checkpoint saved at step {global_step}")
+
+                if self._accelerator.is_main_process:
+                    progress.update(task, advance=1, epoch=epoch, **logs)
 
         if self._accelerator.is_main_process:
             progress.stop()
