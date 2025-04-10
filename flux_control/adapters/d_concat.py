@@ -105,9 +105,9 @@ class DConcatAdapter(PeftLoraAdapter):
         )
 
         packed_noisy_model_input = self._pack_latents(concatenated_noisy_model_input)
-        if batch["txt_ids"] is None:
+        if not "txt_ids" in batch:
             batch["txt_ids"] = self._make_txt_ids(batch["prompt_embeds"])
-        if batch["img_ids"] is None:
+        if not "img_ids" in batch:
             batch["img_ids"] = self._make_img_ids(batch["noisy_latents"])
 
         model_pred = transformer(

@@ -64,11 +64,11 @@ class NConcatAdapter(PeftLoraAdapter):
         concatenated_model_input = torch.cat(
             (noisy_model_input, control_model_input), dim=1
         )
-        if batch["txt_ids"] is None:
+        if not "txt_ids" in batch:
             batch["txt_ids"] = self._make_txt_ids(batch["prompt_embeds"])
-        if batch["img_ids"] is None:
+        if not "img_ids" in batch:
             batch["img_ids"] = repeat(
-                self._make_img_ids(batch["noisy_latents"]), "b n d -> b (r n) d", r=2
+                self._make_img_ids(batch["noisy_latents"]), "n d -> (r n) d", r=2
             )
 
         model_pred = transformer(
@@ -81,5 +81,8 @@ class NConcatAdapter(PeftLoraAdapter):
             img_ids=batch["img_ids"],
             return_dict=False,
         )[0]
+
+        b, n, d = model_pred.shape
+        model_pred = model_pred[:, : (n // 2), :]
 
         return self._unpack_latents(model_pred, h, w)
