@@ -525,6 +525,8 @@ class FluxFinetuner(BaseModel):
             self._info(f"Removed checkpoint {checkpoint_path}")
 
     def _save_checkpoint(self, global_step):
+        self._accelerator.wait_for_everyone()
+
         if self._accelerator.is_main_process:
             self._try_remove_extra_checkpoints()
 
@@ -600,9 +602,9 @@ class FluxFinetuner(BaseModel):
                 self._info(f"Loaded sampler model")
             progress = FluxFinetunerProgress()
             progress.start()
-            
+
             self._sample_and_log(transformer, global_step, progress)
-            
+
             task = progress.add_task(
                 description="[bold blue]Training",
                 total=self._train_steps,
@@ -639,7 +641,9 @@ class FluxFinetuner(BaseModel):
                 }
                 self._accelerator.log(logs, step=global_step)
 
-                if global_step % self.sample_steps == 0 or self.sample_steps == 1:
+                if self._accelerator.is_main_process and (
+                    global_step % self.sample_steps == 0 or self.sample_steps == 1
+                ):
                     self._sample_and_log(transformer, global_step, progress)
                     self._info(f"Sampled at step {global_step}")
 

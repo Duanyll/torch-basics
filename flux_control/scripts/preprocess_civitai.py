@@ -111,7 +111,8 @@ def main():
 
     # 创建进程间通信队列
     ctx = mp.get_context("spawn")
-    result_queue = ctx.Queue()
+    manager = ctx.Manager()
+    result_queue = manager.Queue()
 
     # 启动工作进程
     processes = []
