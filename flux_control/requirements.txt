@@ -1,0 +1,16 @@
+accelerate
+aim
+bitsandbytes
+datasets
+diffusers
+einops
+numpy
+peft
+Pillow
+pydantic
+protobuf
+rich
+torch
+transformers
+lmdb
+sentencepiece
