@@ -110,9 +110,8 @@ class FluxFinetuner(BaseModel):
             dirs = [d for d in dirs if d.startswith("checkpoint")]
             dirs = sorted(dirs, key=self._parse_checkpoint_step)
             path = dirs[-1] if len(dirs) > 0 else None
-
-        if path is None or not os.path.exists(path):
-            raise ValueError(f"Checkpoint {path} not found")
+            if path is None:
+                raise ValueError(f"Checkpoint {path} not found")
 
         self._resume_checkpoint_step = self._parse_checkpoint_step(path)
         if self._resume_checkpoint_step < 0:
@@ -349,8 +348,11 @@ class FluxFinetuner(BaseModel):
         layers_to_save = self.adapter.save_model(model)
 
         if weights:
+            # Remove the model from input list to avoid default saving behavior
             weights.pop()
 
+        # We save the lora with FluxControlPipeline so it can be directly loaded
+        # by the pipeline for inference
         FluxControlPipeline.save_lora_weights(
             output_dir, transformer_lora_layers=layers_to_save
         )
@@ -363,7 +365,8 @@ class FluxFinetuner(BaseModel):
         else:
             assert len(models) == 1
             assert isinstance(self._unwrap_model(models[0]), FluxTransformer2DModel)
-            model = models[0]
+            # Remove the model from input list to avoid default loading behavior
+            model = models.pop()
 
         lora_state_dict = cast(dict, FluxControlPipeline.lora_state_dict(input_dir))
         self.adapter.load_model(model, lora_state_dict)
