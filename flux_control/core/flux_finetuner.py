@@ -445,12 +445,14 @@ class FluxFinetuner(BaseModel):
         return dataloader
 
     def _calculate_real_train_steps(self, dataloader):
+        step_per_epoch = math.ceil(len(dataloader) / self._accelerator.num_processes)
         if self.train_epochs is not None:
-            self._train_steps = self.train_epochs * len(dataloader)
+            self._train_steps = self.train_epochs * step_per_epoch
             self._train_epochs = cast(int, self.train_epochs)
         else:
             self._train_steps = cast(int, self.train_steps)
-            self._train_epochs = math.ceil(self._train_steps / len(dataloader))
+            self._train_epochs = math.ceil(self._train_steps / step_per_epoch)
+        self._info(f"Training for {self._train_steps} steps ({self._train_epochs} epochs)")
 
     def _make_lr_scheduler(self, optimizer) -> torch.optim.lr_scheduler.LRScheduler:
         lr_scheduler = get_scheduler(
@@ -571,7 +573,6 @@ class FluxFinetuner(BaseModel):
                 self._accelerator.log(
                     {f"sample/{key}": aim.Image(image)}, step=global_step
                 )
-        self._accelerator.wait_for_everyone()
 
     def train(self):
         set_seed(self.seed)
