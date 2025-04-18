@@ -98,7 +98,7 @@ def process_sample(video_path: str, prompt: str, device: str = "cuda"):
     warped, grid, warped_regions, warped_alpha = apply_transforms(src_frame, transform)
 
     # Chances to fill lost regions with splat
-    if random.random() < 0.33:
+    if random.random() < 0.4:
         logger.debug(f"Video {video_name} splatting lost regions.")
         warped, grid, warped_alpha = splat_lost_regions(
             src_frame, dst_frame, flow, warped, grid, warped_regions, warped_alpha

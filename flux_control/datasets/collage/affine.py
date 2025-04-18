@@ -135,9 +135,8 @@ def compute_transform_data_structured(
         mask_np = mask["mask"]
         mask_torch = torch.from_numpy(mask_np)
 
-        # Compute median depth (inverse depth)
         masked_depth = depth[mask_torch]
-        avg_depth = torch.median(1.0 / (masked_depth + 1e-6)).item()
+        avg_depth = torch.mean(masked_depth).item()
         mask["avg_depth"] = avg_depth
 
         # Sample 50 random points
