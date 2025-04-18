@@ -17,6 +17,7 @@ protobuf
 ray
 rich
 torch
+timm
 transformers
 lmdb
 sentencepiece

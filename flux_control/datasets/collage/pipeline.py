@@ -15,8 +15,6 @@ import torch
 import torchvision
 import numpy as np
 import pickle
-import cv2
-import kornia
 from einops import rearrange
 
 from .affine import compute_transform_data_structured, apply_transforms

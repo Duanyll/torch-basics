@@ -9,7 +9,9 @@ RUN rm -f /etc/apt/sources.list.d/cuda.list \
     && rm -rf /var/lib/apt/lists/*
 
 RUN cd /workspace \
-    && git clone https://github.com/Duanyll/kmcuda
+    && git clone https://github.com/Duanyll/kmcuda \
+    && cd kmcuda \
+    && git reset --hard ec1327edff148a261e021705e102c96aeac5ceed
 
 ENV TORCH_CUDA_ARCH_LIST="8.9"
 
