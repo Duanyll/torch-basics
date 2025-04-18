@@ -20,6 +20,15 @@
                 "flux_control.scripts.train_lora",
                 "flux_control/configs/peft_lora.toml"
             ]
+        },
+        {
+            "name": "Python Debugger: Collage Pipeline Single",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "flux_control.datasets.collage.pipeline",
+            "args": [
+                "./flux/assets/video.mp4"
+            ]
         }
     ]
 }

@@ -19,6 +19,7 @@ rich
 lmdb
 
 sentencepiece
+pyav
 torch_optimizer
 pytorch-ignite
 opencv-python
