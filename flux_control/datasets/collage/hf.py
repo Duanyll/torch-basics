@@ -7,12 +7,52 @@ pipe: Any = None
 pipe_device: str = "cuda"
 
 
+def _get_clip_prompt_embeds(
+    self,
+    prompt,
+    num_images_per_prompt: int = 1,
+    device = None,
+):
+    device = device or self._execution_device
+
+    prompt = [prompt] if isinstance(prompt, str) else prompt
+    batch_size = len(prompt)
+
+    text_inputs = self.tokenizer(
+        prompt,
+        padding="max_length",
+        max_length=self.tokenizer_max_length,
+        truncation=True,
+        return_overflowing_tokens=False,
+        return_length=False,
+        return_tensors="pt",
+    )
+
+    text_input_ids = text_inputs.input_ids
+    
+    prompt_embeds = self.text_encoder(
+        text_input_ids.to(device), output_hidden_states=False
+    )
+
+    # Use pooled output of CLIPTextModel
+    prompt_embeds = prompt_embeds.pooler_output
+    prompt_embeds = prompt_embeds.to(dtype=self.text_encoder.dtype, device=device)
+
+    # duplicate text embeddings for each generation per prompt, using mps friendly method
+    prompt_embeds = prompt_embeds.repeat(1, num_images_per_prompt)
+    prompt_embeds = prompt_embeds.view(batch_size * num_images_per_prompt, -1)
+
+    return prompt_embeds
+
+
 def load_hf_pipeline(device="cuda"):
     """Initialize the VAE model."""
     global pipe, pipe_device
     pipe = FluxPipeline.from_pretrained(
         "black-forest-labs/FLUX.1-dev", torch_dtype=torch.bfloat16, transformer=None
     )
+    # Patch the pipeline to remove warning
+    pipe._get_clip_prompt_embeds = _get_clip_prompt_embeds.__get__(pipe)
     pipe = pipe.to(device)
     pipe_device = device
 

@@ -1,9 +1,11 @@
 import logging
 import random
 import os
+from typing import Optional
 
 if __name__ == "__main__":
     from rich.logging import RichHandler
+
     logging.basicConfig(
         level=logging.DEBUG,
         format="%(message)s",
@@ -13,9 +15,7 @@ if __name__ == "__main__":
 
 import torch
 import torchvision
-import numpy as np
 import pickle
-from einops import rearrange
 
 from .affine import compute_transform_data_structured, apply_transforms
 from .depth import load_depth_model, estimate_depth
@@ -41,7 +41,12 @@ def load_all_models(device: str = "cuda"):
     logger.info("All models loaded successfully.")
 
 
-def process_sample(video_path: str, prompt: str, device: str = "cuda"):
+def process_sample(
+    video_path: str,
+    prompt: str,
+    video_frames: Optional[torch.Tensor] = None,
+    device: str = "cuda",
+):
     """
     Make a sample from video.
     """
@@ -49,14 +54,17 @@ def process_sample(video_path: str, prompt: str, device: str = "cuda"):
     video_name = os.path.basename(video_path)
 
     # 1. Load video (CPU)
-    video, _, _ = torchvision.io.read_video(
-        video_path, output_format="TCHW", pts_unit="sec"
-    )
-    video = video.float() / 255.0
+    if video_frames is None:
+        video, _, _ = torchvision.io.read_video(
+            video_path, output_format="TCHW", pts_unit="sec"
+        )
+        video = video.float() / 255.0
+    else:
+        video = video_frames
 
     max_attempts = 5
     attempt = 0
-    
+
     while attempt < max_attempts:
         frames = select_frames(video)
         if frames is None:
@@ -74,14 +82,13 @@ def process_sample(video_path: str, prompt: str, device: str = "cuda"):
         flow, target_idx = compute_aggregated_flow(frames, device=device)
         if flow is not None:
             break
-            
-        logger.info(f"Video {video_name} attempt {attempt+1}/{max_attempts}: Invalid optical flow, retrying...")
-        attempt += 1
-    
+
     if flow is None:
-        logger.info(f"Video {video_name} has invalid optical flow after {max_attempts} attempts.")
+        logger.info(
+            f"Video {video_name} has invalid optical flow after {max_attempts} attempts."
+        )
         return None
-    
+
     src_frame = frames[0]
     dst_frame = frames[target_idx]
 
@@ -109,7 +116,7 @@ def process_sample(video_path: str, prompt: str, device: str = "cuda"):
 
     # 8. Extract color palette (GPU)
     palettes, locations = encode_color_palette(src_frame, dropped_masks)
-    
+
     # 9. Encode prompt (GPU)
     prompt_embeds, pooled_prompt_embeds = encode_prompt(prompt)
 
@@ -144,15 +151,22 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Process video and save latents.")
     parser.add_argument("video_path", type=str, help="Path to the video file.")
     parser.add_argument("prompt_path", type=str, help="Path to the prompt file.")
-    parser.add_argument("--device", type=str, default="cuda", help="Device to use (default: cuda).")
-    parser.add_argument("--output", type=str, default="output.pkl", help="Output file to save the latents.")
+    parser.add_argument(
+        "--device", type=str, default="cuda", help="Device to use (default: cuda)."
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default="output.pkl",
+        help="Output file to save the latents.",
+    )
 
     args = parser.parse_args()
     video_path = args.video_path
     device = args.device
 
     console = Console()
-    
+
     try:
         # Load all models
         load_all_models(device)
@@ -163,7 +177,7 @@ if __name__ == "__main__":
     except Exception:
         console.print_exception()
         result = None
-        
+
     describe(result)
     # Save the result
     if result is not None:
