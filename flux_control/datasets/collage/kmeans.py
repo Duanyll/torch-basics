@@ -5,18 +5,6 @@ from torch.profiler import record_function
 from einops import repeat
 
 logger = logging.getLogger(__name__)
-logger.info("Begin to load kmeans operator...")
-try:
-    from .libKMCUDA import kmeans_cuda  # type: ignore
-except ImportError as e:
-    logger.error("Fail to load kmeans operator from local path.")
-    logger.exception(e)
-    print(
-        "Please use libKMCUDA built from https://github.com/duanyll/kmcuda. The built libKMCUDA.so file should be placed in the same directory as this file. Do not use the official libKMCUDA from pip."
-    )
-    raise e
-logger.info("Finish loading kmeans operator.")
-
 seed = 42
 
 
@@ -33,6 +21,16 @@ def kmeans(
         cluster_idx: (sample_num)
         cluster_centers: (cluster_num, feature_dim)
     """
+    try:
+        from .libKMCUDA import kmeans_cuda  # type: ignore
+    except ImportError as e:
+        logger.error("Fail to load kmeans operator from local path.")
+        logger.exception(e)
+        print(
+            "Please use libKMCUDA built from https://github.com/duanyll/kmcuda. The built libKMCUDA.so file should be placed in the same directory as this file. Do not use the official libKMCUDA from pip."
+        )
+        raise e
+
     if cluster_num <= 1:
         return (
             torch.zeros(samples.shape[0], dtype=torch.long, device=samples.device),
