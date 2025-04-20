@@ -102,7 +102,9 @@ def process_sample(
     transform, dropped_masks = compute_transform_data_structured(flow, depth, masks)
 
     # 6. Apply affine transforms (GPU)
-    warped, grid, warped_regions, warped_alpha = apply_transforms(src_frame, transform)
+    warped, grid, warped_regions, warped_alpha = apply_transforms(
+        src_frame, depth, transform
+    )
 
     # Chances to fill lost regions with splat
     if random.random() < 0.4:

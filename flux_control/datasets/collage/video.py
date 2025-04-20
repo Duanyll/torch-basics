@@ -88,12 +88,12 @@ def splat_lost_regions(
         src_image, dst_image, flow, grid=affine_grid, mask=(1 - warped_regions)
     )
     splat_grid = cast(torch.Tensor, splat_grid)
-    combined_mask = splat_mask * (1 - canvas_alpha) + canvas_alpha
     combined = splat_warped * (1 - canvas_alpha) + affine_warped * canvas_alpha
     combined_grid = splat_grid * (1 - canvas_alpha) + affine_grid * canvas_alpha
-    combined_mask = combined_mask.clamp(0, 1)
+    combined_mask = splat_mask * (1 - canvas_alpha) + canvas_alpha
     combined = combined.clamp(0, 1)
     combined_grid = combined_grid.clamp(-1, 1)
+    combined_mask = combined_mask.clamp(0, 1)
     return combined, combined_grid, combined_mask
 
 
