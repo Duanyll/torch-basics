@@ -74,10 +74,6 @@ def process_sample(
         frames = frames.to(device)
         frames = random_crop(frames)
 
-        # 50% chance to flip the video
-        if random.random() < 0.5:
-            frames = torch.flip(frames, dims=[0])
-
         # 2. Estimate optical flow (GPU)
         flow, target_idx = compute_aggregated_flow(frames, device=device)
         if flow is not None:
@@ -129,15 +125,15 @@ def process_sample(
 
     # 10. Encode and save latents (GPU)
     save_dict = {
-        "name": video_name,
+        "video_name": video_name,
         "src": to_save(encode_latents(src_frame)),
-        "dst": to_save(encode_latents(dst_frame)),
-        "warped": to_save(encode_latents(warped)),
-        "grid": to_save(grid),
-        "warped_alpha": to_save(warped_alpha),
-        "edges": to_save(edges),
+        "clean_latents": to_save(encode_latents(dst_frame)),
+        "collage_control_latents": to_save(encode_latents(warped)),
+        "collage_grid": to_save(grid),
+        "collage_alpha": to_save(warped_alpha),
+        "edge_control_latents": to_save(encode_latents(edges)),
         "palettes": to_save(palettes),
-        "locations": to_save(locations),
+        "palette_locations": to_save(locations),
         "prompt_embeds": to_save(prompt_embeds),
         "pooled_prompt_embeds": to_save(pooled_prompt_embeds),
     }

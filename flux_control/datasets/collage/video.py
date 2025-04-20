@@ -22,6 +22,9 @@ def select_frames(video: torch.Tensor, min_frames: int = 5, max_frames: int = 60
     start_idx = random.randint(0, video_frames - num_frames)
     end_idx = start_idx + num_frames
     selected_frames = video[start_idx:end_idx]
+    # 50% chance to flip the video
+    if random.random() < 0.5:
+        selected_frames = torch.flip(selected_frames, dims=[0])
     logging.debug(f"Video has {video_frames} frames, selected {num_frames} frames from {start_idx} to {end_idx}")
     return selected_frames
 

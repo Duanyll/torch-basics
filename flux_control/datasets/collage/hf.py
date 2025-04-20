@@ -1,7 +1,7 @@
 import torch
 from typing import Any
 from diffusers.pipelines.flux.pipeline_flux import FluxPipeline
-from einops import rearrange
+from einops import rearrange, repeat
 
 pipe: Any = None
 pipe_device: str = "cuda"
@@ -77,6 +77,9 @@ def encode_latents(
     :return: Latent representation [C, H', W']
     """
 
+    if image.ndim == 2:
+        image = repeat(image, "h w -> 3 h w", c=3)
+    
     image = rearrange(image, "c h w -> 1 c h w")
     image = image * 2 - 1
     image = image.to(torch.bfloat16)

@@ -1,4 +1,3 @@
-from json import load
 import logging
 import torch
 import torch.multiprocessing as mp
@@ -6,7 +5,6 @@ import torchvision.io
 import pickle
 import lmdb
 import os
-from pathlib import Path
 import argparse
 import queue
 import time
