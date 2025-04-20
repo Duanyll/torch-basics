@@ -78,7 +78,7 @@ def encode_latents(
     """
 
     if image.ndim == 2:
-        image = repeat(image, "h w -> 3 h w", c=3)
+        image = repeat(image, "h w -> c h w", c=3)
     
     image = rearrange(image, "c h w -> 1 c h w")
     image = image * 2 - 1

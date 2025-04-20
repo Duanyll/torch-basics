@@ -34,7 +34,7 @@ def kmeans(
     if cluster_num <= 1:
         return (
             torch.zeros(samples.shape[0], dtype=torch.long, device=samples.device),
-            torch.zeros(cluster_num, samples.shape[1], device=samples.device),
+            torch.mean(samples, dim=0, keepdim=True),
         )
     if cluster_num > samples.shape[0]:
         logger.warning(

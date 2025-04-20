@@ -3,7 +3,10 @@ import random
 from typing import cast
 import torch
 
-from .palette import extract_palette_from_masked_image
+from .palette import (
+    extract_palette_from_masked_image,
+    extract_palette_from_masked_image_with_spatial,
+)
 from .warp import forward_warp
 
 
@@ -25,7 +28,9 @@ def select_frames(video: torch.Tensor, min_frames: int = 5, max_frames: int = 60
     # 50% chance to flip the video
     if random.random() < 0.5:
         selected_frames = torch.flip(selected_frames, dims=[0])
-    logging.debug(f"Video has {video_frames} frames, selected {num_frames} frames from {start_idx} to {end_idx}")
+    logging.debug(
+        f"Video has {video_frames} frames, selected {num_frames} frames from {start_idx} to {end_idx}"
+    )
     return selected_frames
 
 
@@ -36,7 +41,7 @@ RESOLUTIONS_720P = [
     (832, 704),
     (896, 640),
     (960, 576),
-    (1024, 512)
+    (1024, 512),
 ]
 
 RESOLUTIONS_1080P = [
@@ -112,14 +117,19 @@ def encode_color_palette(image: torch.Tensor, masks, area_threshold=0.03, num_co
         if area < area_threshold * total_area:
             continue
         mask_torch = torch.tensor(mask, device=image.device)
-        palette, location = extract_palette_from_masked_image(
+        palette, location = extract_palette_from_masked_image_with_spatial(
             image, mask_torch, max_colors=num_colors, min_colors=1
         )
         palettes.append(palette)
         locations.append(location)
 
     if len(palettes) == 0:
-        return None, None
+        return extract_palette_from_masked_image_with_spatial(
+            image,
+            torch.ones((h, w), device=image.device),
+            max_colors=5,
+            min_colors=1,
+        )
 
     palettes = torch.cat(palettes, dim=0)
     locations = torch.cat(locations, dim=0)

@@ -171,7 +171,7 @@ if __name__ == "__main__":
         with open(args.prompt_path, "r") as f:
             prompt = f.read().strip()
         # Process the video
-        result = process_sample(video_path, prompt, device)
+        result = process_sample(video_path, prompt, device=device)
     except Exception:
         console.print_exception()
         result = None
