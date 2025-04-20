@@ -2,8 +2,6 @@ import torch
 import kornia
 import kornia.color as color
 from typing import Optional
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
 from einops import rearrange
 from .kmeans import kmeans, get_cluster_centers_scatter
 
@@ -74,6 +72,10 @@ def show_color_palette(palette: torch.Tensor, show_hex: bool = True, figsize=(8,
         show_hex (bool): 是否显示颜色值（Hex格式）
         figsize (tuple): 图像尺寸
     """
+    
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as patches
+    
     assert palette.ndim == 2 and palette.shape[1] == 3
 
     n_colors = palette.shape[0]

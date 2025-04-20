@@ -35,4 +35,4 @@ def estimate_edges(image: torch.Tensor) -> torch.Tensor:
     image = image.to(model_device).unsqueeze(0) * 255.0
     out = model(image)
     out = torch.sigmoid(out)
-    return out.squeeze(0)
+    return out.squeeze()
