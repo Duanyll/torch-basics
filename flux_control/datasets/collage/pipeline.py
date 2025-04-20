@@ -66,6 +66,7 @@ def process_sample(
     attempt = 0
 
     while attempt < max_attempts:
+        attempt += 1
         frames = select_frames(video)
         if frames is None:
             logger.info(f"Video {video_name} has too few frames.")
@@ -176,7 +177,7 @@ if __name__ == "__main__":
         console.print_exception()
         result = None
 
-    describe(result)
+    describe(result, max_items=20)
     # Save the result
     if result is not None:
         with open(args.output, "wb") as f:

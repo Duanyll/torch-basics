@@ -11,7 +11,6 @@ import time
 from rich.console import Console
 from rich.logging import RichHandler
 from rich.progress import Progress, BarColumn, TextColumn, TimeRemainingColumn
-from ..datasets.collage.pipeline import process_sample, load_all_models
 
 LMDB_MAP_SIZE = 256 * 1024 * 1024 * 1024  # 256 GB
 
@@ -28,20 +27,20 @@ logger = logging.getLogger("make_collage_dataset")
 logger.setLevel(logging.DEBUG)
 
 # Queue utility functions
-def safe_put(queue, item, timeout=1):
+def safe_put(q, item, timeout=1):
     """Put item to queue with timeout."""
     while True:
         try:
-            queue.put(item, timeout=timeout)
+            q.put(item, timeout=timeout)
             return
         except queue.Full:
             time.sleep(0.1)
 
-def safe_get(queue, timeout=1):
+def safe_get(q, timeout=1):
     """Get item from queue with timeout."""
     while True:
         try:
-            return queue.get(timeout=timeout)
+            return q.get(timeout=timeout)
         except queue.Empty:
             time.sleep(0.1)
 
@@ -86,14 +85,17 @@ def loader(loader_queue, input_queue, progress_queue, caption_dict, num_threads)
             video_path = safe_get(loader_queue)
             if video_path is None:
                 logger.debug(f"Loader {pid} received None, exiting")
+                safe_put(loader_queue, None)
                 safe_put(input_queue, None)
                 break
             video = load_video(video_path)
+            video.share_memory_()
             video_name = os.path.basename(video_path)
             prompt = caption_dict.get(video_name, "")
             logger.debug(f"Loader {pid} putting video {video_path} to input_queue")
             safe_put(input_queue, (video_path, video, prompt))
             safe_put(progress_queue, ("loaded", video_path))
+            del video
     except Exception as e:
         logger.error(f"Loader {pid} error: {e}")
         raise
@@ -110,6 +112,7 @@ def processor(input_queue, output_queue, progress_queue, gpu_id, num_threads):
             item = safe_get(input_queue)
             if item is None:
                 logger.debug(f"Processor {pid} received None, exiting")
+                safe_put(input_queue, None)
                 safe_put(output_queue, None)
                 break
             video_path, video, prompt = item
@@ -163,14 +166,15 @@ def main(args):
     logger.info(f"Total videos to process: {total_items}")
 
     # Initialize native queues
-    loader_queue = mp.Queue(maxsize=10)
-    input_queue = mp.Queue(maxsize=10)
-    output_queue = mp.Queue(maxsize=10)
-    progress_queue = mp.Queue()
+    ctx = mp.get_context("spawn")
+    loader_queue = ctx.Queue(maxsize=args.queue_size)
+    input_queue = ctx.Queue(maxsize=args.queue_size)
+    output_queue = ctx.Queue(maxsize=args.queue_size)
+    progress_queue = ctx.Queue()
     logger.info("Queues created")
 
     # Initialize loader_queue
-    initial_batch_size = min(10, total_items)
+    initial_batch_size = min(args.queue_size, total_items)
     for video_path in video_paths[:initial_batch_size]:
         safe_put(loader_queue, video_path)
     remaining_paths = video_paths[initial_batch_size:]
@@ -179,7 +183,7 @@ def main(args):
     # Start processes
     processes = []
     for i in range(args.num_loaders):
-        p = mp.Process(
+        p = ctx.Process(
             target=loader,
             args=(loader_queue, input_queue, progress_queue, caption_dict, args.num_threads),
         )
@@ -188,7 +192,7 @@ def main(args):
         logger.info(f"Started loader {i}")
 
     for gpu_id in range(args.num_gpus):
-        c = mp.Process(
+        c = ctx.Process(
             target=processor,
             args=(input_queue, output_queue, progress_queue, gpu_id, args.num_threads),
         )
@@ -196,9 +200,9 @@ def main(args):
         processes.append(c)
         logger.info(f"Started processor on GPU {gpu_id}")
 
-    w = mp.Process(
+    w = ctx.Process(
         target=writer,
-        args=(output_queue, progress_queue, args.output_dir, total_items, args.num_threads),
+        args=(output_queue, progress_queue, args.output_dir, args.num_threads),
     )
     w.start()
     processes.append(w)
@@ -275,5 +279,6 @@ if __name__ == "__main__":
     parser.add_argument("--num_loaders", type=int, default=2, help="Number of loader processes")
     parser.add_argument("--num_gpus", type=int, default=4, help="Number of GPUs")
     parser.add_argument("--num_threads", type=int, default=8, help="Number of CPU threads per process")
+    parser.add_argument("--queue_size", type=int, default=4, help="Queue size for loader and processor")
     args = parser.parse_args()
     main(args)
