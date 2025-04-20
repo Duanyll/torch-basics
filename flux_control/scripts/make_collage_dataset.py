@@ -1,4 +1,35 @@
+from typing import cast
 import logging
+from logging.handlers import QueueHandler, QueueListener
+from rich.console import Console
+from rich.logging import RichHandler
+from rich.progress import (
+    Progress,
+    BarColumn,
+    TextColumn,
+    TimeRemainingColumn,
+    TimeElapsedColumn,
+    SpinnerColumn,
+)
+
+LOG_LEVEL = logging.DEBUG
+
+if __name__ == "__main__":
+    # Initialize rich console
+    console = Console()
+
+    handler = RichHandler(rich_tracebacks=True, console=console)
+    # Configure logging
+    logging.basicConfig(
+        level=LOG_LEVEL,
+        format="%(message)s",
+        handlers=[handler],
+    )
+    logger = logging.getLogger("make_collage_dataset")
+    logger.setLevel(LOG_LEVEL)
+else:
+    logger = cast(logging.Logger, None)
+
 import torch
 import torch.multiprocessing as mp
 import torchvision.io
@@ -8,45 +39,72 @@ import os
 import argparse
 import queue
 import time
-from rich.console import Console
-from rich.logging import RichHandler
-from rich.progress import Progress, BarColumn, TextColumn, TimeRemainingColumn
 
-LMDB_MAP_SIZE = 256 * 1024 * 1024 * 1024  # 256 GB
+LMDB_MAP_SIZE = 512 * 1024 * 1024 * 1024  # 256 GB
 
-# Initialize rich console
-console = Console()
 
-# Configure logging
-logging.basicConfig(
-    level=logging.DEBUG,
-    format="%(message)s",
-    handlers=[RichHandler(rich_tracebacks=True, console=console)],
-)
-logger = logging.getLogger("make_collage_dataset")
-logger.setLevel(logging.DEBUG)
+def make_logger_for_worker(name, log_queue, config_hf=False):
+    global logger
+    """Create a logger for a worker process."""
+    handler = QueueHandler(log_queue)
+    logging.basicConfig(
+        level=LOG_LEVEL,
+        format=f"{name}: %(message)s",
+        handlers=[handler],
+    )
+    logger = logging.getLogger(name)
+    logger.setLevel(LOG_LEVEL)
+    if config_hf:
+        import transformers
+        import diffusers
+
+        transformers.utils.logging.disable_default_handler()
+        transformers.utils.logging.disable_progress_bar()
+        transformers.utils.logging.add_handler(handler)
+        diffusers.utils.logging.disable_default_handler()
+        diffusers.utils.logging.add_handler(handler)
+        diffusers.utils.logging.disable_progress_bar()
+    return logger
+
 
 # Queue utility functions
 def safe_put(q, item, timeout=1):
     """Put item to queue with timeout."""
+    global logger
+    total_timeout = 0
     while True:
         try:
             q.put(item, timeout=timeout)
             return
         except queue.Full:
+            total_timeout += timeout
             time.sleep(0.1)
+            if total_timeout > 120:
+                logger.error(f"Queue put waiting too long! {total_timeout} seconds")
+                total_timeout = 0
+            continue
+
 
 def safe_get(q, timeout=1):
     """Get item from queue with timeout."""
+    global logger
+    total_timeout = 0
     while True:
         try:
-            return q.get(timeout=timeout)
+            item = q.get(timeout=timeout)
+            return item
         except queue.Empty:
+            total_timeout += timeout
             time.sleep(0.1)
+            if total_timeout > 120:
+                logger.error(f"Queue get waiting too long! {total_timeout} seconds")
+                total_timeout = 0
+            continue
+
 
 def get_video_paths(input_dir, max_samples):
     """Recursively scan input directory for mp4 files."""
-    logger.debug(f"Scanning videos in {input_dir} with max_samples={max_samples}")
+    logger.info(f"Scanning videos in {input_dir} with max_samples={max_samples}")
     video_paths = []
     for root, _, files in os.walk(input_dir):
         for file in files:
@@ -55,16 +113,18 @@ def get_video_paths(input_dir, max_samples):
             if len(video_paths) >= max_samples:
                 logger.debug(f"Found {len(video_paths)} videos, stopping scan")
                 return video_paths
-    logger.debug(f"Found {len(video_paths)} videos")
+    logger.info(f"Found {len(video_paths)} videos")
     return video_paths
+
 
 def load_caption_file(caption_file):
     """Load caption pickle file."""
-    logger.debug(f"Loading caption file {caption_file}")
+    logger.info(f"Loading caption file {caption_file}")
     with open(caption_file, "rb") as f:
         captions = pickle.load(f)
-    logger.debug(f"Loaded {len(captions)} captions")
+    logger.info(f"Loaded {len(captions)} captions")
     return captions
+
 
 def load_video(video_path):
     """Load and normalize video."""
@@ -75,16 +135,20 @@ def load_video(video_path):
     logger.debug(f"Loaded video {video_path}, shape={video.shape}")
     return video.float() / 255.0
 
-def loader(loader_queue, input_queue, progress_queue, caption_dict, num_threads):
+
+def loader(
+    loader_queue, input_queue, progress_queue, caption_dict, log_queue, num_threads
+):
     """Loader: Load videos and captions, put to input queue."""
     torch.set_num_threads(num_threads)
     pid = os.getpid()
-    logger.debug(f"Loader {pid} started with {num_threads} threads")
+    make_logger_for_worker(f"Loader-{pid}", log_queue)
+    logger.info(f"Loader {pid} started with {num_threads} threads")
     try:
         while True:
             video_path = safe_get(loader_queue)
             if video_path is None:
-                logger.debug(f"Loader {pid} received None, exiting")
+                logger.info(f"Loader {pid} received None, exiting")
                 safe_put(loader_queue, None)
                 safe_put(input_queue, None)
                 break
@@ -100,24 +164,32 @@ def loader(loader_queue, input_queue, progress_queue, caption_dict, num_threads)
         logger.error(f"Loader {pid} error: {e}")
         raise
 
-def processor(input_queue, output_queue, progress_queue, gpu_id, num_threads):
+
+def processor(
+    input_queue, output_queue, progress_queue, gpu_id, log_queue, num_threads
+):
     """Processor: Process videos on GPU, put to output queue."""
     torch.set_num_threads(num_threads)
     pid = os.getpid()
-    logger.debug(f"Processor {pid} started on GPU {gpu_id} with {num_threads} threads")
+    make_logger_for_worker(f"Processor-{pid}", log_queue, config_hf=True)
+    logger.info(f"Processor {pid} started on GPU {gpu_id} with {num_threads} threads")
     torch.cuda.set_device(gpu_id)
+    from ..datasets.collage.pipeline import process_sample, load_all_models
+
     load_all_models(gpu_id)
     try:
         while True:
             item = safe_get(input_queue)
             if item is None:
-                logger.debug(f"Processor {pid} received None, exiting")
+                logger.info(f"Processor {pid} received None, exiting")
                 safe_put(input_queue, None)
                 safe_put(output_queue, None)
                 break
             video_path, video, prompt = item
             logger.debug(f"Processor {pid} processing {video_path}")
-            result = process_sample(video_path, prompt, video_frames=video, device=gpu_id)
+            result = process_sample(
+                video_path, prompt, video_frames=video, device=gpu_id
+            )
             del video
             if result is not None:
                 safe_put(output_queue, (video_path, result))
@@ -128,21 +200,23 @@ def processor(input_queue, output_queue, progress_queue, gpu_id, num_threads):
         logger.error(f"Processor {pid} error: {e}")
         raise
 
-def writer(output_queue, progress_queue, lmdb_path, num_threads):
+
+def writer(output_queue, progress_queue, lmdb_path, log_queue, num_threads):
     """Writer: Write results to lmdb."""
     torch.set_num_threads(num_threads)
     pid = os.getpid()
-    logger.debug(f"Writer {pid} started with {num_threads} threads")
+    make_logger_for_worker(f"Writer-{pid}", log_queue)
+    logger.info(f"Writer {pid} started with {num_threads} threads")
     env = lmdb.open(lmdb_path, map_size=LMDB_MAP_SIZE)
     items_written = 0
     try:
         while True:
             res = safe_get(output_queue)
             if res is None:
-                logger.debug(f"Writer {pid} received None, exiting")
+                logger.info(f"Writer {pid} received None, exiting")
                 break
             video_path, result = res
-            key = f"{items_written:08d}".encode()
+            key = f"{os.path.basename(video_path)}".encode()
             value = pickle.dumps(result)
             with env.begin(write=True) as txn:
                 txn.put(key, value)
@@ -154,6 +228,7 @@ def writer(output_queue, progress_queue, lmdb_path, num_threads):
         raise
     finally:
         env.close()
+
 
 def main(args):
     mp.set_start_method("spawn", force=True)
@@ -171,7 +246,12 @@ def main(args):
     input_queue = ctx.Queue(maxsize=args.queue_size)
     output_queue = ctx.Queue(maxsize=args.queue_size)
     progress_queue = ctx.Queue()
+    log_queue = ctx.Queue()
     logger.info("Queues created")
+
+    # Initialize logging
+    listener = QueueListener(log_queue, handler, respect_handler_level=True)
+    listener.start()
 
     # Initialize loader_queue
     initial_batch_size = min(args.queue_size, total_items)
@@ -185,7 +265,14 @@ def main(args):
     for i in range(args.num_loaders):
         p = ctx.Process(
             target=loader,
-            args=(loader_queue, input_queue, progress_queue, caption_dict, args.num_threads),
+            args=(
+                loader_queue,
+                input_queue,
+                progress_queue,
+                caption_dict,
+                log_queue,
+                args.num_threads,
+            ),
         )
         p.start()
         processes.append(p)
@@ -194,7 +281,14 @@ def main(args):
     for gpu_id in range(args.num_gpus):
         c = ctx.Process(
             target=processor,
-            args=(input_queue, output_queue, progress_queue, gpu_id, args.num_threads),
+            args=(
+                input_queue,
+                output_queue,
+                progress_queue,
+                gpu_id,
+                log_queue,
+                args.num_threads,
+            ),
         )
         c.start()
         processes.append(c)
@@ -202,7 +296,13 @@ def main(args):
 
     w = ctx.Process(
         target=writer,
-        args=(output_queue, progress_queue, args.output_dir, args.num_threads),
+        args=(
+            output_queue,
+            progress_queue,
+            args.output_dir,
+            log_queue,
+            args.num_threads,
+        ),
     )
     w.start()
     processes.append(w)
@@ -210,11 +310,14 @@ def main(args):
 
     # Monitor progress
     with Progress(
+        SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
         BarColumn(),
         "[progress.percentage]{task.percentage:>3.0f}%",
+        TimeElapsedColumn(),
         TimeRemainingColumn(),
         TextColumn("Success: {task.fields[success]} | Skipped: {task.fields[skipped]}"),
+        console=console,
     ) as progress:
         task = progress.add_task(
             "[green]Processing videos...",
@@ -265,20 +368,39 @@ def main(args):
         p.join()
         logger.debug(f"Process {p.pid} joined")
 
+    listener.stop()
+    logger.info("All processes joined")
+
     # Summary
     console.print("\n[bold green]Pipeline Completed[/bold green]")
     console.print(f"[green]Succeeded:[/green] {success}")
     console.print(f"[yellow]Skipped:[/yellow] {skipped}")
 
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Video processing pipeline")
-    parser.add_argument("--input_dir", required=True, help="Directory containing video files")
-    parser.add_argument("--caption_file", required=True, help="Pickle file with captions")
+    parser.add_argument(
+        "--input_dir", required=True, help="Directory containing video files"
+    )
+    parser.add_argument(
+        "--caption_file", required=True, help="Pickle file with captions"
+    )
     parser.add_argument("--output_dir", required=True, help="Output lmdb directory")
-    parser.add_argument("--max_samples", type=int, default=float("inf"), help="Max number of videos to process")
-    parser.add_argument("--num_loaders", type=int, default=2, help="Number of loader processes")
+    parser.add_argument(
+        "--max_samples",
+        type=int,
+        default=float("inf"),
+        help="Max number of videos to process",
+    )
+    parser.add_argument(
+        "--num_loaders", type=int, default=2, help="Number of loader processes"
+    )
     parser.add_argument("--num_gpus", type=int, default=4, help="Number of GPUs")
-    parser.add_argument("--num_threads", type=int, default=8, help="Number of CPU threads per process")
-    parser.add_argument("--queue_size", type=int, default=4, help="Queue size for loader and processor")
+    parser.add_argument(
+        "--num_threads", type=int, default=8, help="Number of CPU threads per process"
+    )
+    parser.add_argument(
+        "--queue_size", type=int, default=4, help="Queue size for loader and processor"
+    )
     args = parser.parse_args()
     main(args)
