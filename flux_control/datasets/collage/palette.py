@@ -64,9 +64,9 @@ def extract_palette_from_masked_image_with_spatial(
     mask: torch.Tensor,  # (H, W), bool or {0, 1}
     max_colors: int = 8,
     min_colors: int = 3,
-    delta_e_thresh: float = 15.0,
+    delta_e_thresh: float = 10.0,
     max_pixels: int = 100000,
-    spatial_weight: float = 0.3,  # 空间特征权重
+    spatial_weight: float = 0.5,  # 空间特征权重
     device: Optional[torch.device] = None,
 ):
     assert image.ndim == 3 and image.shape[0] == 3

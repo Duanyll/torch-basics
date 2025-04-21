@@ -23,6 +23,7 @@ from .dexined import load_dexined_model, estimate_edges
 from .flow import load_raft_model, compute_aggregated_flow
 from .segmentation import load_segmentation_model, generate_masks
 from .hf import load_hf_pipeline, encode_latents, encode_prompt
+from .palette import extract_palette_from_masked_image
 from .video import select_frames, random_crop, encode_color_palette, splat_lost_regions
 
 logger = logging.getLogger(__name__)
@@ -64,6 +65,7 @@ def process_sample(
 
     max_attempts = 5
     attempt = 0
+    require_portrait = random.random() < 0.2 # Less portrait videos
 
     while attempt < max_attempts:
         attempt += 1
@@ -73,7 +75,7 @@ def process_sample(
             return None
 
         frames = frames.to(device)
-        frames = random_crop(frames)
+        frames = random_crop(frames, require_portrait)
 
         # 2. Estimate optical flow (GPU)
         flow, target_idx = compute_aggregated_flow(frames, device=device)
@@ -109,12 +111,15 @@ def process_sample(
         warped, grid, warped_alpha = splat_lost_regions(
             src_frame, dst_frame, flow, warped, grid, warped_regions, warped_alpha
         )
+        palettes, locations = extract_palette_from_masked_image(dst_frame, 1 - warped_alpha)
+    else:
+        palettes, locations = encode_color_palette(src_frame, dropped_masks)
+        
 
     # 7. Estimate edges (GPU)
-    edges = estimate_edges(src_frame)
-
-    # 8. Extract color palette (GPU)
-    palettes, locations = encode_color_palette(src_frame, dropped_masks)
+    edges = estimate_edges(dst_frame)
+    if random.random() < 0.4:
+        edges = edges * (1 - warped_alpha)
 
     # 9. Encode prompt (GPU)
     prompt_embeds, pooled_prompt_embeds = encode_prompt(prompt)

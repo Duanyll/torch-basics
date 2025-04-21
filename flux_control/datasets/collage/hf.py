@@ -101,8 +101,8 @@ def decode_latents(
     """
 
     latents = rearrange(latents, "c h w -> 1 c h w")
-    latents = (latents / pipe.config.scaling_factor) + pipe.config.shift_factor
-    image = pipe.decode(latents).sample
+    latents = (latents / pipe.vae.config.scaling_factor) + pipe.vae.config.shift_factor
+    image = pipe.vae.decode(latents).sample
     image = (image + 1) / 2
     image = rearrange(image, "1 c h w -> c h w")
     return image

@@ -34,7 +34,6 @@ def select_frames(video: torch.Tensor, min_frames: int = 5, max_frames: int = 60
     return selected_frames
 
 
-# Currently, landscape only
 RESOLUTIONS_720P = [
     # width, height
     (768, 768),
@@ -54,7 +53,7 @@ RESOLUTIONS_1080P = [
 ]
 
 
-def random_crop(video: torch.Tensor):
+def random_crop(video: torch.Tensor, require_portrait: bool = False):
     """
     Randomly crop the video frames to a random resolution in the resolution bucket.
     Center crop and resize the video frames to the same resolution.
@@ -62,7 +61,9 @@ def random_crop(video: torch.Tensor):
     t, c, h, w = video.shape
     resolution_list = RESOLUTIONS_720P if h < 1080 else RESOLUTIONS_1080P
     resolution = random.choice(resolution_list)
-    target_h, target_w = resolution
+    target_w, target_h = resolution
+    if require_portrait:
+        target_h, target_w = target_w, target_h
     logger.debug(f"Random crop to {target_h}x{target_w}")
     dest_aspect_ratio = target_w / target_h
     src_aspect_ratio = w / h

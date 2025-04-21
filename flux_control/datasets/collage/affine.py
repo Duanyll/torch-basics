@@ -68,12 +68,19 @@ def compute_transform_data_structured(
     flow: torch.Tensor,
     depth: torch.Tensor,
     masks: list[np.ndarray],
-    min_area: int = 300,
+    min_area: float = 0.001,
+    max_drop_area: float = 0.2,
     chance_keep_leaf: float = 0.9,
     chance_keep_parent: float = 0.2,
     chance_split: float = 0.5,
     estimate_affine_samples: int = 50,
 ):
+    if len(masks) == 0:
+        return [], []
+
+    total_area = depth.shape[0] * depth.shape[1]
+    min_area = int(min_area * total_area)
+    max_drop_area = int(max_drop_area * total_area)
     mask_data = []
 
     for mask in masks:
@@ -105,17 +112,27 @@ def compute_transform_data_structured(
             if "finalized" in mask_data[node["parent"]]:
                 node["finalized"] = True
                 continue
-        rand = random.random()
         data = {"area": node["area"], "mask": node["mask"]}
         if "has_child" in node:
+            rand = random.uniform(
+                0,
+                (
+                    (chance_keep_parent + chance_split)
+                    if node["area"] > max_drop_area
+                    else 1
+                ),
+            )
             if rand < chance_keep_parent:
                 node["finalized"] = True
                 selected_masks.append(data)
-            elif rand < chance_keep_parent + chance_split:
+            elif rand <= chance_keep_parent + chance_split:
                 remain_area = np.sum(node["remaining"])
                 if remain_area > min_area:
                     remain_data = {"area": remain_area, "mask": node["remaining"]}
-                    if random.random() < chance_keep_leaf:
+                    if (
+                        random.random() < chance_keep_leaf
+                        or remain_area > max_drop_area
+                    ):
                         selected_masks.append(remain_data)
                     else:
                         dropped_masks.append(remain_data)
@@ -124,7 +141,7 @@ def compute_transform_data_structured(
                 dropped_masks.append(data)
         else:
             node["finalized"] = True
-            if rand < chance_keep_leaf:
+            if random.random() < chance_keep_leaf or node["area"] > max_drop_area:
                 selected_masks.append(data)
             else:
                 dropped_masks.append(data)
@@ -153,7 +170,11 @@ def compute_transform_data_structured(
         )
         mask["affine_trans"] = affine_trans
 
-    logger.debug("Compute transform data: %d masks selected, %d dropped", len(selected_masks), len(dropped_masks))
+    logger.debug(
+        "Compute transform data: %d masks selected, %d dropped",
+        len(selected_masks),
+        len(dropped_masks),
+    )
 
     return selected_masks, dropped_masks
 

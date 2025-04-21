@@ -348,7 +348,7 @@ def main(args):
                 if remaining_paths:
                     next_path = remaining_paths[0]
                     try:
-                        loader_queue.put(next_path, timeout=1)
+                        loader_queue.put(next_path, timeout=0.1)
                         remaining_paths.pop(0)
                         logger.debug(f"Loader queue refilled with {next_path}")
                     except queue.Full:

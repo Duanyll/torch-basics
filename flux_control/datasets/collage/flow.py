@@ -174,7 +174,8 @@ def compute_aggregated_flow(
         logger.warning("Need at least 2 frames to compute flow.")
         return None, 0
     
-    base_size = math.sqrt(H ** 2 + W ** 2)
+    # base_size = math.sqrt(H ** 2 + W ** 2)
+    base_size = H
     low_motion_threshold_frame5 *= base_size
     low_motion_threshold_final *= base_size
     stable_flow_threshold *= base_size

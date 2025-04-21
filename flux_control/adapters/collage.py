@@ -230,14 +230,15 @@ class CollageAdapter(DConcatAdapter):
         Create the color text ids for the palette locations.
         """
         b, n, d = palette_locations.shape
+        dtype = palette_locations.dtype
         if b != 1:
             raise ValueError(
                 "CollageAdapter only supports batch size of 1. This limitation is due to the "
                 "internal handling of txt_ids in FluxTransformer2DModel."
             )
-        mesh = einops.rearrange(palette_locations, "1 n d -> n d")
+        mesh = einops.rearrange(palette_locations.float(), "1 n d -> n d")
         ij = meshgrid_to_ij(mesh, h=h_len, w=w_len)
         color_txt_ids, _ = einops.pack(
             (torch.zeros((n, 1), dtype=mesh.dtype, device=mesh.device), ij), "n *"
         )
-        return color_txt_ids
+        return color_txt_ids.to(dtype=dtype)
