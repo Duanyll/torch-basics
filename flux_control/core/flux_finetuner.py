@@ -619,8 +619,8 @@ class FluxFinetuner(BaseModel):
                 progress_type="train",
             )
 
+        transformer.train()
         for epoch in range(starting_epoch, self._train_epochs):
-            transformer.train()
             for step, batch in enumerate(dataloader):
                 if global_step > self._train_steps:
                     break
@@ -648,8 +648,10 @@ class FluxFinetuner(BaseModel):
                 if self._accelerator.is_main_process and (
                     global_step % self.sample_steps == 0 or self.sample_steps == 1
                 ):
+                    transformer.eval()
                     self._sample_and_log(transformer, global_step, progress)
                     self._info(f"Sampled at step {global_step}")
+                    transformer.train()
 
                 if (
                     global_step % self.checkpointing_steps == 0

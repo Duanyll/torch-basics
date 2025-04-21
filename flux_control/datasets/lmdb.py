@@ -3,27 +3,34 @@ import torch
 from torch.utils.data import Dataset
 import pickle
 
+
 class LMDBDataset(Dataset):
     def __init__(self, path: str):
         self.lmdb_path = path
-        self.env = lmdb.open(path, readonly=True, lock=False, readahead=False, meminit=False)
-        self.length = self._get_length()
+        self.env = lmdb.open(
+            path, readonly=True, lock=False, readahead=False, meminit=False
+        )
+        self.keys = self._load_keys()
 
-    def _get_length(self):
+    def _load_keys(self):
         with self.env.begin(write=False) as txn:
-            return txn.stat()['entries']
-        
+            cursor = txn.cursor()
+            return [key for key, _ in cursor]  # store raw bytes keys
+
     def __len__(self):
-        return self.length
-    
+        return len(self.keys)
+
     def __getitem__(self, idx):
-        sample_key = f"{idx:08}"
+        if idx >= len(self.keys):
+            raise IndexError(f"Index {idx} out of range.")
+        key = self.keys[idx]
         with self.env.begin(write=False) as txn:
-            value = txn.get(sample_key.encode())
+            value = txn.get(key)
             if value is None:
-                raise IndexError(f"Sample {idx} not found in LMDB.")
+                raise KeyError(f"Key {key} not found in LMDB.")
             sample = pickle.loads(value)
         return sample
-    
+
     def __del__(self):
-        self.env.close()
+        if hasattr(self, "env") and self.env is not None:
+            self.env.close()

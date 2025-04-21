@@ -115,18 +115,14 @@ class FluxSampler(BaseModel):
             generator=generator,
         )
 
-    def _latent_to_image(self, latent):
+    def _latent_to_image(self, latent) -> Image.Image:
         latent = (
             latent / self._pipe.vae.config.scaling_factor
             + self._pipe.vae.config.shift_factor
         )
         latent = latent.to(device=self._vae_device, dtype=self._vae_dtype)
         image = self._pipe.vae.decode(latent, return_dict=False)[0]
-        pil_image = cast(
-            Image.Image,
-            self._pipe.image_processor.postprocess(image, output_type="pil"),
-        )[0]
-        return pil_image
+        return self._pipe.image_processor.postprocess(image, output_type="pil")[0] # type: ignore
 
     def _make_timesteps(self, latent_len: int):
         t = torch.linspace(1.0, 0.0, self.steps + 1, device=self._device)

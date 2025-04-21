@@ -2,11 +2,13 @@ from .base import BaseAdapter
 from .peft_lora import PeftLoraAdapter
 from .d_concat import DConcatAdapter
 from .n_concat import NConcatAdapter
+from .collage import CollageAdapter
 
 ADAPTER_MAP = {
     "peft_lora": PeftLoraAdapter,
     "d_concat": DConcatAdapter,
     "n_concat": NConcatAdapter,
+    "collage": CollageAdapter,
 }
 
 def parse_adapter_config(adapter_config) -> BaseAdapter:

@@ -1,0 +1,31 @@
+output_dir = "./runs/test_collage"
+logging_dir = "./runs"
+experiment_name = "test_collage"
+checkpointing_steps = 10
+sample_steps = 10
+# sample_batch_pickle = "data/285058_sample.pt"
+
+accelerator_amp_mode = "no"
+base_precision = "fp8-upcast"
+trainable_precision = "bf16"
+allow_tf32 = true
+gradient_checkpointing = true
+use_8bit_adam = false
+
+seed = 42
+gradient_accumulation_steps = 2
+train_steps = 20
+learning_rate = 5e-6
+lr_scheduler = "constant"
+weighting_scheme = "logit_normal"
+
+[dataset]
+type = "mock_collage"
+
+[adapter]
+type = "collage"
+rank = 128
+
+[sampler]
+seed = 42
+vae_on_cpu = false

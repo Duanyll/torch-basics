@@ -66,7 +66,7 @@ class PeftLoraAdapter(BaseAdapter):
         transformer_lora_layers_to_save = get_peft_model_state_dict(transformer)
         if self.train_norm_layers:
             transformer_norm_layers_to_save = {
-                f"transformer.{name}": param
+                name: param
                 for name, param in transformer.named_parameters()
                 if any(k in name for k in NORM_LAYER_PREFIXES)
             }

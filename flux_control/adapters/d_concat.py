@@ -17,6 +17,7 @@ class DConcatAdapter(PeftLoraAdapter):
     This is used by Flux.1 Canny and Flux.1 Depth models.
     """
 
+    train_norm_layers: bool = True
     lora_layers: Literal["all-linear"] | list[str] = "all-linear"
     rank: PositiveInt = 128
     use_lora_bias: bool = True
