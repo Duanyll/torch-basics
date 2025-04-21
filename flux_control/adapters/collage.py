@@ -19,7 +19,6 @@ class CollageContextEmbedder(nn.Module):
         original_embedder: nn.Module,
         color_dim: int = 3,
         inner_dim: int = 3072,
-        chance_dropout_color: float = 0.1,
     ):
         super().__init__()
         self.text_embedder = original_embedder
@@ -28,15 +27,12 @@ class CollageContextEmbedder(nn.Module):
         self.color_embedder = nn.Linear(color_dim, inner_dim)
         self.color_embedder.weight.data.zero_()
         self.color_embedder.bias.data.zero_()
-        self.chance_dropout_color = chance_dropout_color
 
     def forward(self, encoder_hidden_states):
         if isinstance(encoder_hidden_states, tuple):
             x, color = encoder_hidden_states
             x = self.text_embedder(x)
             color = self.color_embedder(color)
-            if self.training and random.random() < self.chance_dropout_color:
-                color = torch.zeros_like(color)
             concated, _ = einops.pack((x, color), "b * d")
             return concated
         else:
@@ -83,7 +79,6 @@ class CollageAdapter(DConcatAdapter):
                 orig_context_embedder,
                 color_dim=3,
                 inner_dim=orig_context_embedder.out_features,
-                chance_dropout_color=self.chance_dropout_color,
             )
             transformer.context_embedder = new_context_embedder  # type: ignore
 
@@ -136,14 +131,14 @@ class CollageAdapter(DConcatAdapter):
             - `collage_alpha`: `[B, H, W]` Collage alpha mask at original image resolution.
               1 for visible, 0 for invisible (to inpaint).
             - `edge_control_latents`: `[B, C, H, W]` VAE Encoded dexined control condition image at VAE latent resolution.
-            - `palettes`: `[B, N, 3]` Color palettes for each text prompt.
-            - `palette_locations`: `[B, N, 2]` Color palette locations for each text prompt, in F.grid_sample coordinates.
 
             Optional keys are:
             - `txt_ids`: `[B, N, 3]` Used for adding positional embeddings to the text embeddings.
                Usually all zeros. Will be calculated if not present.
             - `img_ids`: `[B, N, 3]` Used for adding positional embeddings to the image embeddings.
                Will be calculated if not present.
+            - `palettes`: `[B, N, 3]` Color palettes for each text prompt.
+            - `palette_locations`: `[B, N, 2]` Color palette locations for each text prompt, in F.grid_sample coordinates.
 
         timestep : torch.Tensor([B])
             The current timestep. Range is [0, 1].
@@ -174,20 +169,30 @@ class CollageAdapter(DConcatAdapter):
             batch["img_ids"] = self._make_img_ids(batch["noisy_latents"])
 
         if not "txt_ids" in batch:
-            batch["txt_ids"], _ = einops.pack(
-                (
-                    self._make_txt_ids(batch["prompt_embeds"]),
-                    self._make_color_txt_ids(batch["palette_locations"], h_len, w_len),
-                ),
-                "* d",
-            )
+            if "palettes" in batch:
+                batch["txt_ids"], _ = einops.pack(
+                    (
+                        self._make_txt_ids(batch["prompt_embeds"]),
+                        self._make_color_txt_ids(
+                            batch["palette_locations"], h_len, w_len
+                        ),
+                    ),
+                    "* d",
+                )
+            else:
+                batch["txt_ids"] = self._make_txt_ids(batch["prompt_embeds"])
+
+        if "palettes" in batch:
+            encoder_hidden_states = (batch["prompt_embeds"], batch["palettes"])
+        else:
+            encoder_hidden_states = batch["prompt_embeds"]
 
         model_pred = transformer(
             hidden_states=input_latents,
             timestep=timestep,
             guidance=guidance,
             pooled_projections=batch["pooled_prompt_embeds"],
-            encoder_hidden_states=(batch["prompt_embeds"], batch["palettes"]),
+            encoder_hidden_states=encoder_hidden_states,
             txt_ids=batch["txt_ids"],
             img_ids=batch["img_ids"],
             return_dict=False,
@@ -207,6 +212,9 @@ class CollageAdapter(DConcatAdapter):
             batch["edge_control_latents"] = torch.zeros_like(
                 batch["edge_control_latents"]
             )
+        if random.random() < self.chance_dropout_color and "palettes" in batch:
+            del batch["palettes"]
+            del batch["palette_locations"]
         return super().train_step(transformer, batch, timestep, guidance)
 
     def _pack_mask(self, mask: torch.Tensor) -> torch.Tensor:
