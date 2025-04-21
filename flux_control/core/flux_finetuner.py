@@ -87,7 +87,7 @@ class FluxFinetuner(BaseModel):
     checkpointing_steps: int = 500
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     sample_steps: int = 50
-    sample_batch_pickle: str | None = None
+    sample_pickle_dir: str | None = None
     checkpointings_limit: int | None = None
     _resume_checkpoint_path: str | None = None
     _resume_checkpoint_step: int = 0
@@ -130,14 +130,26 @@ class FluxFinetuner(BaseModel):
 
     @model_validator(mode="after")
     def _check_sample_batch(self):
-        if self.sample_batch_pickle is None:
+        if self.sample_pickle_dir is None:
             return self
         if self.sample_steps % self.gradient_accumulation_steps != 0:
             raise ValueError(
                 f"Sample steps {self.sample_steps} must be divisible by gradient accumulation steps {self.gradient_accumulation_steps}"
             )
-        with open(self.sample_batch_pickle, "rb") as f:
-            self._sample_batch = pickle.load(f)
+        self._sample_batch = {}
+        # Load .pkl files from the sample_pickle_dir
+        if not os.path.exists(self.sample_pickle_dir):
+            raise ValueError(
+                f"Sample pickle dir {self.sample_pickle_dir} does not exist"
+            )
+        for file in os.listdir(self.sample_pickle_dir):
+            if file.endswith(".pkl"):
+                with open(os.path.join(self.sample_pickle_dir, file), "rb") as f:
+                    self._sample_batch[file[:-4]] = pickle.load(f)
+        if len(self._sample_batch) == 0:
+            raise ValueError(
+                f"No .pkl files found in {self.sample_pickle_dir}, please provide a valid directory"
+            )
         # Make sure the sample batch is a dict of dicts
         if not isinstance(self._sample_batch, dict):
             raise ValueError(
@@ -455,7 +467,9 @@ class FluxFinetuner(BaseModel):
         else:
             self._train_steps = cast(int, self.train_steps)
             self._train_epochs = math.ceil(self._train_steps / step_per_epoch)
-        self._info(f"Training for {self._train_steps} steps ({self._train_epochs} epochs)")
+        self._info(
+            f"Training for {self._train_steps} steps ({self._train_epochs} epochs)"
+        )
 
     def _make_lr_scheduler(self, optimizer) -> torch.optim.lr_scheduler.LRScheduler:
         lr_scheduler = get_scheduler(
