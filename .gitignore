@@ -1,5 +1,7 @@
 /data
 /runs
+/config
+/accelerate-config
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

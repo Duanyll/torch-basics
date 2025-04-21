@@ -12,7 +12,7 @@ from rich.progress import (
     SpinnerColumn,
 )
 
-LOG_LEVEL = logging.DEBUG
+LOG_LEVEL = logging.INFO
 
 if __name__ == "__main__":
     # Initialize rich console
