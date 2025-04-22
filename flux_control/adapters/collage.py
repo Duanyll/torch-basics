@@ -151,6 +151,12 @@ class CollageAdapter(DConcatAdapter):
             The predicted velocity in latent space.
         """
 
+        # Hotfix: Remove extra batch dim in pooled_prompt_embeds and prompt_embeds due to mistake in dataset preprocessing
+        if batch["pooled_prompt_embeds"].ndim == 3:
+            batch["pooled_prompt_embeds"] = batch["pooled_prompt_embeds"].squeeze(1)
+        if batch["prompt_embeds"].ndim == 4:
+            batch["prompt_embeds"] = batch["prompt_embeds"].squeeze(1)
+
         b, c, h, w = batch["noisy_latents"].shape
         h_len = h // self.patch_size
         w_len = w // self.patch_size

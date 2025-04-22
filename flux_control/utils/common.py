@@ -24,9 +24,6 @@ def deep_merge_dicts(dict1, dict2):
     return result
 
 
-import torch
-
-
 def meshgrid_to_ij(grid: torch.Tensor, h: int, w: int):
     """
     Convert a meshgrid for F.grid_sample to the subscript index [i, j].

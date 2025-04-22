@@ -3,7 +3,7 @@ logging_dir = "./runs"
 experiment_name = "test_collage"
 checkpointing_steps = 10
 sample_steps = 10
-# sample_batch_pickle = "data/285058_sample.pt"
+sample_pickle_dir = "data/sample"
 
 accelerator_amp_mode = "no"
 base_precision = "fp8-upcast"
@@ -29,3 +29,4 @@ rank = 128
 [sampler]
 seed = 42
 vae_on_cpu = false
+infer_latent_size_from = "collage_control_latents"

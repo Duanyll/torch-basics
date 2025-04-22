@@ -11,7 +11,7 @@ def _get_clip_prompt_embeds(
     self,
     prompt,
     num_images_per_prompt: int = 1,
-    device = None,
+    device=None,
 ):
     device = device or self._execution_device
 
@@ -29,7 +29,7 @@ def _get_clip_prompt_embeds(
     )
 
     text_input_ids = text_inputs.input_ids
-    
+
     prompt_embeds = self.text_encoder(
         text_input_ids.to(device), output_hidden_states=False
     )
@@ -79,7 +79,7 @@ def encode_latents(
 
     if image.ndim == 2:
         image = repeat(image, "h w -> c h w", c=3)
-    
+
     image = rearrange(image, "c h w -> 1 c h w")
     image = image * 2 - 1
     image = image.to(torch.bfloat16)
@@ -114,4 +114,4 @@ def encode_prompt(prompt: str):
     prompt_embeds, pooled_prompt_embeds, _ = pipe.encode_prompt(
         prompt=prompt, prompt_2=prompt, device=pipe_device
     )
-    return prompt_embeds, pooled_prompt_embeds
+    return prompt_embeds.squeeze(0), pooled_prompt_embeds.squeeze(0)

@@ -50,3 +50,4 @@ if __name__ == "__main__":
         main(args.config_path, args.config_overrides)
     except Exception:
         console.print_exception()
+        raise

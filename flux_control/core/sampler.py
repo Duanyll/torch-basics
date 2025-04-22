@@ -19,6 +19,8 @@ class FluxSampler(BaseModel):
     pretrained_model_id: str = "black-forest-labs/FLUX.1-dev"
     height: int = 1024
     width: int = 1024
+    infer_size_from: str | None = None
+    infer_latent_size_from: str | None = None
     seed: int = 0
 
     _pipe: FluxPipeline
@@ -53,7 +55,17 @@ class FluxSampler(BaseModel):
         progress: Optional[Progress] = None,
     ) -> Image.Image:
         if not "noisy_latents" in batch:
-            latent = self._make_empty_latent(self.height, self.width)
+            if self.infer_size_from is not None:
+                _, _, height, width = batch[self.infer_size_from].shape
+                height = height 
+            elif self.infer_latent_size_from is not None:
+                _, _, height, width = batch[self.infer_latent_size_from].shape
+                height = height * 8
+                width = width * 8
+            else:
+                height = self.height
+                width = self.width
+            latent = self._make_empty_latent(height, width)
         else:
             latent = batch["noisy_latents"]
 
