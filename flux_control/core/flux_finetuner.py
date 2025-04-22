@@ -1,5 +1,6 @@
 import math
 import os
+import sys
 import shutil
 import logging
 import random
@@ -596,6 +597,17 @@ class FluxFinetuner(BaseModel):
                     {f"sample/{key}": aim.Image(image)}, step=global_step
                 )
 
+    def _check_loss_validity(self, loss, global_step, batch):
+        if torch.isnan(loss).any() or torch.isinf(loss).any():
+            rank = self._accelerator.process_index
+            self._info(f"Step {global_step} on rank {rank} loss is NaN or Inf")
+            save_path = os.path.join(self.output_dir, f"dump-{rank}-{global_step}")
+            self._accelerator.save_state(save_path)
+            torch.save(batch, os.path.join(save_path, "batch.pt"))
+            self._info(f"Dumped batch to {save_path}")
+            self._accelerator.end_training()
+            sys.exit(1)
+
     def train(self):
         set_seed(self.seed)
 
@@ -646,6 +658,7 @@ class FluxFinetuner(BaseModel):
 
                 with self._accelerator.accumulate(transformer):
                     loss = self._train_step(transformer, batch)
+                    self._check_loss_validity(loss, global_step, batch)
                     self._accelerator.backward(loss)
 
                     if self._accelerator.sync_gradients:

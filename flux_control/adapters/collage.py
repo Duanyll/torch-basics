@@ -219,8 +219,8 @@ class CollageAdapter(DConcatAdapter):
                 batch["edge_control_latents"]
             )
         if random.random() < self.chance_dropout_color and "palettes" in batch:
-            del batch["palettes"]
-            del batch["palette_locations"]
+            batch["palettes"] = torch.zeros_like(batch["palettes"])
+            batch["palette_locations"] = torch.zeros_like(batch["palette_locations"])
         return super().train_step(transformer, batch, timestep, guidance)
 
     def _pack_mask(self, mask: torch.Tensor) -> torch.Tensor:
