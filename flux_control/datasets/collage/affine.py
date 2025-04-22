@@ -72,7 +72,7 @@ def compute_transform_data_structured(
     max_drop_area: float = 0.2,
     chance_keep_leaf: float = 0.9,
     chance_keep_parent: float = 0.2,
-    chance_split: float = 0.5,
+    chance_split: float = 0.75,
     estimate_affine_samples: int = 50,
 ):
     if len(masks) == 0:

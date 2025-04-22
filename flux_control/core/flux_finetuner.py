@@ -568,12 +568,17 @@ class FluxFinetuner(BaseModel):
         self._info(f"Base layer dtype: {lora_layer.base_layer.weight.dtype}")
         self._info(f"LoRA layer dtype: {lora_layer.lora_A.default.weight.dtype}")
 
-    def _move_batch_to_device(self, batch):
+    def _move_batch_to_device(self, batch, insert_batch_dim=True):
         new_batch = {}
         for k, v in batch.items():
-            new_batch[k] = (
-                v.to(self._accelerator.device) if isinstance(v, torch.Tensor) else v
-            )
+            if isinstance(v, torch.Tensor):
+                if insert_batch_dim:
+                    v = v.unsqueeze(0)
+                new_batch[k] = v.to(
+                    device=self._accelerator.device, dtype=self._weight_dtype
+                )
+            else:
+                new_batch[k] = v
         return new_batch
 
     def _sample_and_log(self, transformer, global_step, progress):

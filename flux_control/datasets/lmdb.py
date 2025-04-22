@@ -13,9 +13,8 @@ class LMDBDataset(Dataset):
         self.keys = self._load_keys()
 
     def _load_keys(self):
-        with self.env.begin(write=False) as txn:
-            cursor = txn.cursor()
-            return [key for key, _ in cursor]  # store raw bytes keys
+        with self.env.begin() as txn:
+            return list(txn.cursor().iternext(values=False))
 
     def __len__(self):
         return len(self.keys)
