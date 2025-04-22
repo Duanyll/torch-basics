@@ -83,6 +83,7 @@ class CollageAdapter(DConcatAdapter):
             transformer.context_embedder = new_context_embedder  # type: ignore
 
         super().install_modules(transformer)
+        transformer.context_embedder.color_embedder.requires_grad_(True)
 
     def save_model(self, transformer: FluxTransformer2DModel) -> dict:
         layers_to_save = super().save_model(transformer)
@@ -221,6 +222,10 @@ class CollageAdapter(DConcatAdapter):
         if random.random() < self.chance_dropout_color and "palettes" in batch:
             batch["palettes"] = torch.zeros_like(batch["palettes"])
             batch["palette_locations"] = torch.zeros_like(batch["palette_locations"])
+        # Hotfix: Fill NaN values in "palettes" and "palette_locations" with zeros
+        if "palettes" in batch:
+            batch["palettes"] = torch.nan_to_num(batch["palettes"])
+            batch["palette_locations"] = torch.nan_to_num(batch["palette_locations"])
         return super().train_step(transformer, batch, timestep, guidance)
 
     def _pack_mask(self, mask: torch.Tensor) -> torch.Tensor:
