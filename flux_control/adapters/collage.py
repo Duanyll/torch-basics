@@ -1,6 +1,7 @@
 import logging
+import pickle
 from typing import Literal, Tuple
-from pydantic import PositiveInt
+from pydantic import PositiveInt, model_validator
 import torch
 import torch.nn as nn
 from diffusers.models.transformers.transformer_flux import FluxTransformer2DModel
@@ -69,8 +70,24 @@ class CollageAdapter(DConcatAdapter):
     gaussian_init_lora: bool = False
     use_lora_bias: bool = True
 
+    empty_text_embedding_pickle: str | None = None
+    _empty_text_embedding: dict[str, torch.Tensor] | None = None
+    chance_dropout_text: float = 0.5
     chance_dropout_edge: float = 0.1
     chance_dropout_color: float = 0.1
+
+    @model_validator(mode="after")
+    def _validate_empty_text_embedding_pickle(self):
+        # Try to load the empty text embedding pickle file
+        if self.empty_text_embedding_pickle is not None:
+            try:
+                with open(self.empty_text_embedding_pickle, "rb") as f:
+                    self._empty_text_embedding = pickle.load(f)
+            except Exception as e:
+                raise ValueError(
+                    f"Failed to load empty text embedding pickle file: {e}"
+                ) from e
+        return self
 
     def install_modules(self, transformer: FluxTransformer2DModel):
         with torch.no_grad():
@@ -219,6 +236,7 @@ class CollageAdapter(DConcatAdapter):
             batch["edge_control_latents"] = torch.zeros_like(
                 batch["edge_control_latents"]
             )
+
         if random.random() < self.chance_dropout_color and "palettes" in batch:
             batch["palettes"] = torch.zeros_like(batch["palettes"])
             batch["palette_locations"] = torch.zeros_like(batch["palette_locations"])
@@ -226,6 +244,24 @@ class CollageAdapter(DConcatAdapter):
         if "palettes" in batch:
             batch["palettes"] = torch.nan_to_num(batch["palettes"])
             batch["palette_locations"] = torch.nan_to_num(batch["palette_locations"])
+
+        # Chance to dropout text
+        if random.random() < self.chance_dropout_text:
+            if self._empty_text_embedding is None:
+                batch["pooled_prompt_embeds"] = torch.zeros_like(
+                    batch["pooled_prompt_embeds"]
+                )
+                batch["prompt_embeds"] = torch.zeros_like(batch["prompt_embeds"])
+            else:
+                device = batch["pooled_prompt_embeds"].device
+                dtype = batch["pooled_prompt_embeds"].dtype
+                batch["pooled_prompt_embeds"] = self._empty_text_embedding[
+                    "pooled_prompt_embeds"
+                ].to(device=device, dtype=dtype)
+                batch["prompt_embeds"] = self._empty_text_embedding["prompt_embeds"].to(
+                    device=device, dtype=dtype
+                )
+
         return super().train_step(transformer, batch, timestep, guidance)
 
     def _pack_mask(self, mask: torch.Tensor) -> torch.Tensor:
