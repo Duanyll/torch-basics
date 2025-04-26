@@ -39,8 +39,7 @@ import os
 import argparse
 import queue
 import time
-
-LMDB_MAP_SIZE = 512 * 1024 * 1024 * 1024  # 256 GB
+import tomllib
 
 
 def make_logger_for_worker(name, log_queue, config_hf=False):
@@ -102,19 +101,37 @@ def safe_get(q, timeout=1):
             continue
 
 
-def get_video_paths(input_dir, max_samples):
+def get_processed_video_paths(lmdb_path):
+    # Enumerate both the result and skipped databases
+    video_paths = set()
+    with lmdb.open(lmdb_path, max_dbs=16) as env:
+        for db_name in [b"result", b"skipped"]:
+            db = env.open_db(db_name)
+            with env.begin(write=True) as txn:
+                cursor = txn.cursor(db)
+                for key in cursor.iternext(values=False):
+                    video_paths.add(key.decode())
+    return video_paths
+
+
+def get_video_paths(input_dir, max_samples, resume):
     """Recursively scan input directory for mp4 files."""
     logger.info(f"Scanning videos in {input_dir} with max_samples={max_samples}")
-    video_paths = []
+    video_paths = set()
     for root, _, files in os.walk(input_dir):
         for file in files:
             if file.endswith(".mp4"):
-                video_paths.append(os.path.join(root, file))
+                video_paths.add(os.path.join(root, file))
             if len(video_paths) >= max_samples:
                 logger.debug(f"Found {len(video_paths)} videos, stopping scan")
-                return video_paths
+                return list(video_paths)
     logger.info(f"Found {len(video_paths)} videos")
-    return video_paths
+    if resume:
+        # If resuming, check if the LMDB already has processed videos
+        processed_video_paths = get_processed_video_paths(args.output_dir)
+        video_paths = video_paths - processed_video_paths
+        logger.info(f"Resuming: {len(processed_video_paths)} videos already processed")
+    return list(video_paths)
 
 
 def load_caption_file(caption_file):
@@ -134,6 +151,17 @@ def load_video(video_path):
     )
     logger.debug(f"Loaded video {video_path}, shape={video.shape}")
     return video.float() / 255.0
+
+
+def load_config_file(config_path):
+    from ..datasets.collage.config import CollageConfig
+
+    if config_path is not None:
+        with open(config_path, "rb") as f:
+            config = tomllib.load(f)
+        return CollageConfig(**config)
+    else:
+        return CollageConfig()
 
 
 def loader(
@@ -166,7 +194,13 @@ def loader(
 
 
 def processor(
-    input_queue, output_queue, progress_queue, gpu_id, log_queue, num_threads
+    input_queue,
+    output_queue,
+    progress_queue,
+    gpu_id,
+    config_path,
+    log_queue,
+    num_threads,
 ):
     """Processor: Process videos on GPU, put to output queue."""
     torch.set_num_threads(num_threads)
@@ -174,8 +208,10 @@ def processor(
     make_logger_for_worker(f"Processor-{pid}", log_queue, config_hf=True)
     logger.info(f"Processor {pid} started on GPU {gpu_id} with {num_threads} threads")
     torch.cuda.set_device(gpu_id)
+
     from ..datasets.collage.pipeline import process_sample, load_all_models
 
+    cfg = load_config_file(config_path)
     load_all_models(gpu_id)
     try:
         while True:
@@ -188,11 +224,11 @@ def processor(
             video_path, video, prompt = item
             logger.debug(f"Processor {pid} processing {video_path}")
             result = process_sample(
-                video_path, prompt, video_frames=video, device=gpu_id
+                video_path, prompt, video_frames=video, device=gpu_id, cfg=cfg
             )
             del video
+            safe_put(output_queue, (video_path, result))
             if result is not None:
-                safe_put(output_queue, (video_path, result))
                 safe_put(progress_queue, ("processed", video_path))
             else:
                 safe_put(progress_queue, ("skipped", video_path))
@@ -201,13 +237,17 @@ def processor(
         raise
 
 
-def writer(output_queue, progress_queue, lmdb_path, log_queue, num_threads):
+def writer(
+    output_queue, progress_queue, lmdb_path, log_queue, lmdb_map_size, num_threads
+):
     """Writer: Write results to lmdb."""
     torch.set_num_threads(num_threads)
     pid = os.getpid()
     make_logger_for_worker(f"Writer-{pid}", log_queue)
     logger.info(f"Writer {pid} started with {num_threads} threads")
-    env = lmdb.open(lmdb_path, map_size=LMDB_MAP_SIZE)
+    env = lmdb.open(lmdb_path, map_size=lmdb_map_size * 1024**3, max_dbs=16)
+    db_result = env.open_db(b"result")
+    db_skipped = env.open_db(b"skipped")
     items_written = 0
     try:
         while True:
@@ -218,8 +258,9 @@ def writer(output_queue, progress_queue, lmdb_path, log_queue, num_threads):
             video_path, result = res
             key = f"{os.path.basename(video_path)}".encode()
             value = pickle.dumps(result)
+            db = db_skipped if result is None else db_result
             with env.begin(write=True) as txn:
-                txn.put(key, value)
+                txn.put(key, value, db=db)
             items_written += 1
             logger.debug(f"Writer {pid} wrote {video_path} ({items_written})")
             safe_put(progress_queue, ("written", video_path))
@@ -236,7 +277,7 @@ def main(args):
 
     # Load captions and videos
     caption_dict = load_caption_file(args.caption_file)
-    video_paths = get_video_paths(args.input_dir, args.max_samples)
+    video_paths = get_video_paths(args.input_dir, args.max_samples, args.resume)
     total_items = len(video_paths)
     logger.info(f"Total videos to process: {total_items}")
 
@@ -286,6 +327,7 @@ def main(args):
                 output_queue,
                 progress_queue,
                 gpu_id,
+                args.config_path,
                 log_queue,
                 args.num_threads,
             ),
@@ -300,6 +342,7 @@ def main(args):
             output_queue,
             progress_queue,
             args.output_dir,
+            args.lmdb_map_size,
             log_queue,
             args.num_threads,
         ),
@@ -401,6 +444,23 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--queue_size", type=int, default=4, help="Queue size for loader and processor"
+    )
+    parser.add_argument(
+        "--lmdb_map_size",
+        type=int,
+        default=256,
+        help="LMDB map size in GB",
+    )
+    parser.add_argument(
+        "--config_path",
+        type=str,
+        default=None,
+        help="Path to the config file for CollageConfig",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume processing, skipping already processed videos",
     )
     args = parser.parse_args()
     main(args)

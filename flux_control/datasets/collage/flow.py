@@ -1,4 +1,3 @@
-import math
 import torch
 import torch.nn.functional as F
 import torchvision.models.optical_flow as flow_models
@@ -10,6 +9,8 @@ import kornia.geometry.transform as KGeom
 import logging
 import time
 from typing import Tuple, Optional, List, Any
+
+from .config import CollageConfig
 
 logger = logging.getLogger(__name__)
 
@@ -142,11 +143,8 @@ def _compute_pairwise_flow(
 @torch.no_grad()
 def compute_aggregated_flow(
     frames_tchw: torch.Tensor,
+    cfg: CollageConfig = CollageConfig(),
     device: str = "cuda",
-    median_filter_kernel_size: int = 5,
-    low_motion_threshold_frame5: float = 0.01,
-    low_motion_threshold_final: float = 0.03,
-    stable_flow_threshold: float = 0.5,
 ) -> Tuple[Optional[torch.Tensor], int]:
     """
     Computes aggregated optical flow across a sequence of frames.
@@ -173,12 +171,12 @@ def compute_aggregated_flow(
     if T < 2:
         logger.warning("Need at least 2 frames to compute flow.")
         return None, 0
-    
+
     # base_size = math.sqrt(H ** 2 + W ** 2)
-    base_size = H
-    low_motion_threshold_frame5 *= base_size
-    low_motion_threshold_final *= base_size
-    stable_flow_threshold *= base_size
+    base_size = H  # Prefer landscape aspect ratio
+    low_motion_threshold_frame5 = cfg.low_motion_threshold_frame5 * base_size
+    low_motion_threshold_final = cfg.low_motion_threshold_final * base_size
+    stable_flow_threshold = cfg.stable_flow_threshold * base_size
 
     # Ensure frames are on the correct device and add batch dimension
     frames_b1tchw = frames_tchw.unsqueeze(0).to(device)  # (1, T, C, H, W)
@@ -243,6 +241,7 @@ def compute_aggregated_flow(
 
         # 4. Apply Median Filter for smoothing
         # kornia expects (B, C, H, W)
+        median_filter_kernel_size = cfg.median_filter_kernel_size
         if median_filter_kernel_size > 1:
             # Ensure odd kernel size
             k_size = (

@@ -6,6 +6,8 @@ import random
 from einops import rearrange
 import logging
 
+from .config import CollageConfig
+
 logger = logging.getLogger(__name__)
 
 
@@ -68,19 +70,14 @@ def compute_transform_data_structured(
     flow: torch.Tensor,
     depth: torch.Tensor,
     masks: list[np.ndarray],
-    min_area: float = 0.001,
-    max_drop_area: float = 0.2,
-    chance_keep_leaf: float = 0.9,
-    chance_keep_parent: float = 0.2,
-    chance_split: float = 0.75,
-    estimate_affine_samples: int = 50,
+    cfg: CollageConfig = CollageConfig(),
 ):
     if len(masks) == 0:
         return [], []
 
     total_area = depth.shape[0] * depth.shape[1]
-    min_area = int(min_area * total_area)
-    max_drop_area = int(max_drop_area * total_area)
+    min_area = int(cfg.min_object_area * total_area)
+    max_drop_area = int(cfg.max_drop_area * total_area)
     mask_data = []
 
     for mask in masks:
@@ -117,20 +114,20 @@ def compute_transform_data_structured(
             rand = random.uniform(
                 0,
                 (
-                    (chance_keep_parent + chance_split)
+                    (cfg.chance_keep_stem + cfg.chance_split_stem)
                     if node["area"] > max_drop_area
                     else 1
                 ),
             )
-            if rand < chance_keep_parent:
+            if rand < cfg.chance_keep_stem:
                 node["finalized"] = True
                 selected_masks.append(data)
-            elif rand <= chance_keep_parent + chance_split:
+            elif rand <= cfg.chance_keep_stem + cfg.chance_split_stem:
                 remain_area = np.sum(node["remaining"])
                 if remain_area > min_area:
                     remain_data = {"area": remain_area, "mask": node["remaining"]}
                     if (
-                        random.random() < chance_keep_leaf
+                        random.random() < cfg.chance_keep_leaf
                         or remain_area > max_drop_area
                     ):
                         selected_masks.append(remain_data)
@@ -141,7 +138,7 @@ def compute_transform_data_structured(
                 dropped_masks.append(data)
         else:
             node["finalized"] = True
-            if random.random() < chance_keep_leaf or node["area"] > max_drop_area:
+            if random.random() < cfg.chance_keep_leaf or node["area"] > max_drop_area:
                 selected_masks.append(data)
             else:
                 dropped_masks.append(data)
@@ -159,7 +156,7 @@ def compute_transform_data_structured(
         # Sample 50 random points
         all_y, all_x = np.nonzero(mask_np)
         rand_indices = np.random.choice(
-            len(all_y), size=estimate_affine_samples, replace=False
+            len(all_y), size=cfg.num_estimate_affine_samples, replace=False
         )
         src_points = np.array([all_x[rand_indices], all_y[rand_indices]]).T
         tgt_points = src_points + flow_np[:, src_points[:, 1], src_points[:, 0]].T
@@ -180,7 +177,9 @@ def compute_transform_data_structured(
 
 
 @torch.no_grad()
-def apply_transforms(image, depth, transform_data):
+def apply_transforms(
+    image, depth, transform_data, cfg: CollageConfig = CollageConfig()
+):
     """
     Apply transforms to the image based on transform data using GPU and einops for enhanced readability.
 
@@ -257,7 +256,9 @@ def apply_transforms(image, depth, transform_data):
         warped_mask = warped_mask.float()
 
         # Erode mask using Kornia
-        kernel = torch.ones(3, 3, device=device)
+        kernel = torch.ones(
+            cfg.transform_erode_size, cfg.transform_erode_size, device=device
+        )
         eroded_mask = (
             kornia.morphology.erosion(
                 rearrange(warped_mask, "h w 1 -> 1 1 h w"), kernel

@@ -3,6 +3,7 @@ import kornia
 import kornia.color as color
 from typing import Optional
 from einops import rearrange
+from .config import CollageConfig
 from .kmeans import kmeans, get_cluster_centers_scatter
 
 
@@ -11,8 +12,7 @@ def extract_palette_from_masked_image(
     mask: torch.Tensor,  # (H, W), bool or {0, 1}
     max_colors: int = 8,
     min_colors: int = 3,
-    delta_e_thresh: float = 15.0,
-    max_pixels: int = 100000,
+    cfg: CollageConfig = CollageConfig(),
     device: Optional[torch.device] = None,
 ):
     assert image.ndim == 3 and image.shape[0] == 3
@@ -34,8 +34,8 @@ def extract_palette_from_masked_image(
     grid_pixels = grid[mask_flat.bool()]  # (N, 2)
 
     # Randomly sample pixels if too many
-    if masked_pixels.shape[0] > max_pixels:
-        indices = torch.randperm(masked_pixels.shape[0])[:max_pixels]
+    if masked_pixels.shape[0] > cfg.max_cluster_samples:
+        indices = torch.randperm(masked_pixels.shape[0])[: cfg.max_cluster_samples]
         masked_pixels = masked_pixels[indices]
         grid_pixels = grid_pixels[indices]
 
@@ -44,12 +44,16 @@ def extract_palette_from_masked_image(
 
         # 转 Lab 并判断 ΔE 距离
         # Reshape centers to match the expected format for rgb_to_lab: (B, 3, H, W)
-        centers_input = centers.unsqueeze(0).permute(0, 2, 1).unsqueeze(-1)  # (1, 3, k, 1)
-        lab_centers = color.rgb_to_lab(centers_input)[0, :, :, 0].permute(1, 0)  # (k, 3)
+        centers_input = (
+            centers.unsqueeze(0).permute(0, 2, 1).unsqueeze(-1)
+        )  # (1, 3, k, 1)
+        lab_centers = color.rgb_to_lab(centers_input)[0, :, :, 0].permute(
+            1, 0
+        )  # (k, 3)
         diff = lab_centers.unsqueeze(1) - lab_centers.unsqueeze(0)
         dist = (diff**2).sum(dim=-1).sqrt()  # ΔE
         upper_triangle = dist[torch.triu(torch.ones_like(dist), diagonal=1).bool()]
-        if (upper_triangle > delta_e_thresh).all():
+        if (upper_triangle > cfg.delta_e_threshold).all():
             locations = get_cluster_centers_scatter(grid_pixels, idx, k)
             return centers, locations  # 满足距离要求
 
@@ -64,9 +68,7 @@ def extract_palette_from_masked_image_with_spatial(
     mask: torch.Tensor,  # (H, W), bool or {0, 1}
     max_colors: int = 8,
     min_colors: int = 3,
-    delta_e_thresh: float = 10.0,
-    max_pixels: int = 100000,
-    spatial_weight: float = 0.5,  # 空间特征权重
+    cfg: CollageConfig = CollageConfig(),
     device: Optional[torch.device] = None,
 ):
     assert image.ndim == 3 and image.shape[0] == 3
@@ -87,18 +89,23 @@ def extract_palette_from_masked_image_with_spatial(
     grid_pixels = grid[mask_flat.bool()]  # (N, 2)
 
     # 随机下采样（同步 RGB 和空间）
-    if masked_pixels.shape[0] > max_pixels:
-        indices = torch.randperm(masked_pixels.shape[0], device=device)[:max_pixels]
+    if masked_pixels.shape[0] > cfg.max_cluster_samples:
+        indices = torch.randperm(masked_pixels.shape[0], device=device)[
+            : cfg.max_cluster_samples
+        ]
         masked_pixels = masked_pixels[indices]
         grid_pixels = grid_pixels[indices]
 
     # 拼接 RGB + XY
     features = torch.cat(
-        [masked_pixels, spatial_weight * grid_pixels], dim=1  # 控制空间特征影响力
+        [masked_pixels, cfg.palette_spatial_weight * grid_pixels],
+        dim=1,  # 控制空间特征影响力
     )  # (N, 5)
 
     for k in reversed(range(min_colors, max_colors + 1)):
-        idx, centers = kmeans(features, cluster_num=k)
+        idx, centers = kmeans(features, cluster_num=k, filter_nan=False)
+        if torch.isnan(centers).any():
+            continue
 
         # 提取 RGB 部分用于 ΔE 计算
         rgb_centers = centers[:, :3]
@@ -109,7 +116,7 @@ def extract_palette_from_masked_image_with_spatial(
         diff = lab_centers.unsqueeze(1) - lab_centers.unsqueeze(0)
         dist = (diff**2).sum(dim=-1).sqrt()  # ΔE
         upper_triangle = dist[torch.triu(torch.ones_like(dist), diagonal=1).bool()]
-        if (upper_triangle > delta_e_thresh).all():
+        if (upper_triangle > cfg.delta_e_threshold).all():
             grid_pixels_unsq = grid_pixels.unsqueeze(0)  # (1, N, 2)
             idx_unsq = idx.unsqueeze(0).long()  # (1, N)
             locations = get_cluster_centers_scatter(grid_pixels_unsq, idx_unsq, k)
@@ -133,10 +140,10 @@ def show_color_palette(palette: torch.Tensor, show_hex: bool = True, figsize=(8,
         show_hex (bool): 是否显示颜色值（Hex格式）
         figsize (tuple): 图像尺寸
     """
-    
+
     import matplotlib.pyplot as plt
     import matplotlib.patches as patches
-    
+
     assert palette.ndim == 2 and palette.shape[1] == 3
 
     n_colors = palette.shape[0]
@@ -162,3 +169,36 @@ def show_color_palette(palette: torch.Tensor, show_hex: bool = True, figsize=(8,
             )
 
     plt.show()
+
+
+def encode_color_palette(image: torch.Tensor, masks, cfg: CollageConfig):
+    palettes = []
+    locations = []
+
+    c, h, w = image.shape
+    total_area = h * w
+    for mask_data in masks:
+        mask = mask_data["mask"]
+        area = mask_data["area"]
+        if area < cfg.palette_area_threshold * total_area:
+            continue
+        mask_torch = torch.tensor(mask, device=image.device)
+        palette, location = extract_palette_from_masked_image_with_spatial(
+            image, mask_torch, max_colors=cfg.palette_per_mask, min_colors=1, cfg=cfg
+        )
+        palettes.append(palette)
+        locations.append(location)
+
+    if len(palettes) == 0:
+        return extract_palette_from_masked_image_with_spatial(
+            image,
+            torch.ones((h, w), device=image.device),
+            max_colors=cfg.num_palette_fallback,
+            min_colors=1,
+            cfg=cfg,
+        )
+
+    palettes = torch.cat(palettes, dim=0)
+    locations = torch.cat(locations, dim=0)
+
+    return palettes, locations

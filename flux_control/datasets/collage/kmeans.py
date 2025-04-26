@@ -9,17 +9,19 @@ seed = 42
 
 
 def kmeans(
-    samples: torch.Tensor, cluster_num: int, cached_center=None
+    samples: torch.Tensor, cluster_num: int, cached_center=None, filter_nan: bool = True
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
-    Run kmeans on samples. Result is on the same device as samples. If cached_center is not None, it will be used as the initial cluster center.
+    Run kmeans on samples. Result is on the same device as samples. If cached_center is not 
+    None, it will be used as the initial cluster center. The returned cluster_centers may
+    contain NaN values due to empty clusters. Set filter_nan = True to replace them zero.
     Args:
         samples: (sample_num, feature_dim)
         cluster_num: int
         cached_center: (cluster_num, feature_dim)
     Returns:
         cluster_idx: (sample_num)
-        cluster_centers: (cluster_num, feature_dim)
+        cluster_centers: (cluster_num, feature_dim) 
     """
     try:
         from .libKMCUDA import kmeans_cuda  # type: ignore
@@ -27,7 +29,9 @@ def kmeans(
         logger.error("Fail to load kmeans operator from local path.")
         logger.exception(e)
         print(
-            "Please use libKMCUDA built from https://github.com/duanyll/kmcuda. The built libKMCUDA.so file should be placed in the same directory as this file. Do not use the official libKMCUDA from pip."
+            "Please use libKMCUDA built from https://github.com/duanyll/kmcuda. The built"
+            "libKMCUDA.so file should be placed in the same directory as this file. Do not"
+            "use the official libKMCUDA from pip."
         )
         raise e
 
@@ -46,6 +50,8 @@ def kmeans(
             idx, centers = kmeans_cuda(samples, cluster_num, seed=seed)
         else:
             idx, centers = kmeans_cuda(samples, cluster_num, cached_center, seed=seed)
+    if filter_nan:
+        centers = torch.nan_to_num(centers, nan=0.0, posinf=0.0, neginf=0.0)
     return idx.long(), centers
 
 

@@ -2,31 +2,38 @@ import logging
 import random
 from typing import cast
 import torch
+import torchvision
 
-from .palette import (
-    extract_palette_from_masked_image,
-    extract_palette_from_masked_image_with_spatial,
-)
+from .config import CollageConfig
+from .flow import compute_aggregated_flow
 from .warp import forward_warp
 
 
 logger = logging.getLogger(__name__)
 
 
-def select_frames(video: torch.Tensor, min_frames: int = 5, max_frames: int = 60):
+def load_video(video_path: str):
+    video, _, _ = torchvision.io.read_video(
+        video_path, output_format="TCHW", pts_unit="sec"
+    )
+    video = video.float() / 255.0
+    return video
+
+
+def select_frames(video: torch.Tensor, cfg: CollageConfig = CollageConfig()):
     """
     Randomly select consecutive frames from the video.
     """
     video_frames = video.shape[0]
-    if video_frames < min_frames:
+    if video_frames < cfg.min_frames:
         return None
 
-    num_frames = random.randint(min_frames, min(video_frames, max_frames))
+    num_frames = random.randint(cfg.min_frames, min(video_frames, cfg.max_frames))
     start_idx = random.randint(0, video_frames - num_frames)
     end_idx = start_idx + num_frames
     selected_frames = video[start_idx:end_idx]
     # 50% chance to flip the video
-    if random.random() < 0.5:
+    if random.random() < cfg.chance_reverse:
         selected_frames = torch.flip(selected_frames, dims=[0])
     logging.debug(
         f"Video has {video_frames} frames, selected {num_frames} frames from {start_idx} to {end_idx}"
@@ -34,32 +41,17 @@ def select_frames(video: torch.Tensor, min_frames: int = 5, max_frames: int = 60
     return selected_frames
 
 
-RESOLUTIONS_720P = [
-    # width, height
-    (768, 768),
-    (832, 704),
-    (896, 640),
-    (960, 576),
-    (1024, 512),
-]
-
-RESOLUTIONS_1080P = [
-    (1024, 1024),
-    (1088, 960),
-    (1152, 896),
-    (1216, 832),
-    (1280, 768),
-    (1344, 704),
-]
-
-
-def random_crop(video: torch.Tensor, require_portrait: bool = False):
+def random_crop(
+    video: torch.Tensor,
+    require_portrait: bool = False,
+    cfg: CollageConfig = CollageConfig(),
+):
     """
     Randomly crop the video frames to a random resolution in the resolution bucket.
     Center crop and resize the video frames to the same resolution.
     """
     t, c, h, w = video.shape
-    resolution_list = RESOLUTIONS_720P if h < 1080 else RESOLUTIONS_1080P
+    resolution_list = cfg.resolutions_720p if h < 1080 else cfg.resolutions_1080p
     resolution = random.choice(resolution_list)
     target_w, target_h = resolution
     if require_portrait:
@@ -106,33 +98,30 @@ def splat_lost_regions(
     return combined, combined_grid, combined_mask
 
 
-def encode_color_palette(image: torch.Tensor, masks, area_threshold=0.03, num_colors=3):
-    palettes = []
-    locations = []
+def try_extract_frame(
+    video: torch.Tensor, device: str = "cuda", cfg: CollageConfig = CollageConfig()
+):
+    max_attempts = cfg.num_extract_attempts
+    attempt = 0
+    require_portrait = random.random() < cfg.chance_portrait
 
-    c, h, w = image.shape
-    total_area = h * w
-    for mask_data in masks:
-        mask = mask_data["mask"]
-        area = mask_data["area"]
-        if area < area_threshold * total_area:
-            continue
-        mask_torch = torch.tensor(mask, device=image.device)
-        palette, location = extract_palette_from_masked_image_with_spatial(
-            image, mask_torch, max_colors=num_colors, min_colors=1
+    while attempt < max_attempts:
+        attempt += 1
+        frames = select_frames(video)
+        if frames is None:
+            return None
+
+        frames = frames.to(device)
+        frames = random_crop(frames, require_portrait)
+
+        # 2. Estimate optical flow (GPU)
+        flow, target_idx = compute_aggregated_flow(frames, cfg=cfg, device=device)
+        if flow is not None:
+            break
+    else:
+        logger.debug(
+            f"Video has invalid optical flow after {max_attempts} attempts."
         )
-        palettes.append(palette)
-        locations.append(location)
+        return None
 
-    if len(palettes) == 0:
-        return extract_palette_from_masked_image_with_spatial(
-            image,
-            torch.ones((h, w), device=image.device),
-            max_colors=5,
-            min_colors=1,
-        )
-
-    palettes = torch.cat(palettes, dim=0)
-    locations = torch.cat(locations, dim=0)
-
-    return palettes, locations
+    return flow, frames[0], frames[target_idx]
