@@ -10,6 +10,7 @@ from rich.progress import (
     TimeRemainingColumn,
     TimeElapsedColumn,
     SpinnerColumn,
+    MofNCompleteColumn
 )
 
 LOG_LEVEL = logging.INFO
@@ -33,6 +34,7 @@ else:
 import torch
 import torch.multiprocessing as mp
 import torchvision.io
+import numpy as np
 import pickle
 import lmdb
 import os
@@ -78,9 +80,9 @@ def safe_put(q, item, timeout=1):
         except queue.Full:
             total_timeout += timeout
             time.sleep(0.1)
-            if total_timeout > 120:
+            if total_timeout > 600:
                 logger.error(f"Queue put waiting too long! {total_timeout} seconds")
-                total_timeout = 0
+                return
             continue
 
 
@@ -95,9 +97,9 @@ def safe_get(q, timeout=1):
         except queue.Empty:
             total_timeout += timeout
             time.sleep(0.1)
-            if total_timeout > 120:
+            if total_timeout > 600:
                 logger.error(f"Queue get waiting too long! {total_timeout} seconds")
-                total_timeout = 0
+                return None
             continue
 
 
@@ -122,16 +124,21 @@ def get_video_paths(input_dir, max_samples, resume):
         for file in files:
             if file.endswith(".mp4"):
                 video_paths.add(os.path.join(root, file))
-            if len(video_paths) >= max_samples:
-                logger.debug(f"Found {len(video_paths)} videos, stopping scan")
-                return list(video_paths)
     logger.info(f"Found {len(video_paths)} videos")
     if resume:
         # If resuming, check if the LMDB already has processed videos
         processed_video_paths = get_processed_video_paths(args.output_dir)
         video_paths = video_paths - processed_video_paths
         logger.info(f"Resuming: {len(processed_video_paths)} videos already processed")
-    return list(video_paths)
+    result_list = list(video_paths)
+    if max_samples < len(result_list):
+        # Randomly sample the video paths
+        np.random.seed(42)
+        result_list = np.random.choice(
+            result_list, size=max_samples, replace=False
+        ).tolist()
+    logger.info(f"Selected {len(result_list)} videos to process")
+    return result_list
 
 
 def load_caption_file(caption_file):
@@ -177,8 +184,6 @@ def loader(
             video_path = safe_get(loader_queue)
             if video_path is None:
                 logger.info(f"Loader {pid} received None, exiting")
-                safe_put(loader_queue, None)
-                safe_put(input_queue, None)
                 break
             video = load_video(video_path)
             video.share_memory_()
@@ -218,8 +223,6 @@ def processor(
             item = safe_get(input_queue)
             if item is None:
                 logger.info(f"Processor {pid} received None, exiting")
-                safe_put(input_queue, None)
-                safe_put(output_queue, None)
                 break
             video_path, video, prompt = item
             logger.debug(f"Processor {pid} processing {video_path}")
@@ -238,7 +241,7 @@ def processor(
 
 
 def writer(
-    output_queue, progress_queue, lmdb_path, log_queue, lmdb_map_size, num_threads
+    output_queue, progress_queue, lmdb_path, lmdb_map_size, log_queue, num_threads
 ):
     """Writer: Write results to lmdb."""
     torch.set_num_threads(num_threads)
@@ -302,7 +305,7 @@ def main(args):
     logger.info(f"Initialized loader_queue with {initial_batch_size} paths")
 
     # Start processes
-    processes = []
+    loader_processes = []
     for i in range(args.num_loaders):
         p = ctx.Process(
             target=loader,
@@ -316,9 +319,10 @@ def main(args):
             ),
         )
         p.start()
-        processes.append(p)
+        loader_processes.append(p)
         logger.info(f"Started loader {i}")
 
+    processor_processes = []
     for gpu_id in range(args.num_gpus):
         c = ctx.Process(
             target=processor,
@@ -333,10 +337,10 @@ def main(args):
             ),
         )
         c.start()
-        processes.append(c)
+        processor_processes.append(c)
         logger.info(f"Started processor on GPU {gpu_id}")
 
-    w = ctx.Process(
+    writer_process = ctx.Process(
         target=writer,
         args=(
             output_queue,
@@ -347,8 +351,7 @@ def main(args):
             args.num_threads,
         ),
     )
-    w.start()
-    processes.append(w)
+    writer_process.start()
     logger.info("Started writer")
 
     # Monitor progress
@@ -356,6 +359,7 @@ def main(args):
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
         BarColumn(),
+        MofNCompleteColumn(),
         "[progress.percentage]{task.percentage:>3.0f}%",
         TimeElapsedColumn(),
         TimeRemainingColumn(),
@@ -378,7 +382,7 @@ def main(args):
                 logger.debug(f"Received {status} for {video_path}")
                 if status == "loaded":
                     pass
-                elif status == "written":
+                elif status == "processed":
                     success += 1
                     processed += 1
                     progress.update(task, advance=1, success=success, skipped=skipped)
@@ -399,17 +403,32 @@ def main(args):
 
         except Exception as e:
             logger.error(f"Main process error: {e}")
-            # Signal termination
-            for _ in range(args.num_loaders):
-                safe_put(loader_queue, None)
             raise
 
-    # Cleanup
+    # Proper cleanup sequence
+    logger.info("Processing complete, terminating workers in sequence")
+    
+    # Terminate loaders first
+    logger.info("Terminating loader processes")
     for _ in range(args.num_loaders):
         safe_put(loader_queue, None)
-    for p in processes:
+    for p in loader_processes:
         p.join()
-        logger.debug(f"Process {p.pid} joined")
+        logger.debug(f"Loader process {p.pid} joined")
+    
+    # Terminate processors next
+    logger.info("Terminating processor processes")
+    for _ in range(args.num_gpus):
+        safe_put(input_queue, None)
+    for p in processor_processes:
+        p.join()
+        logger.debug(f"Processor process {p.pid} joined")
+    
+    # Terminate writer last
+    logger.info("Terminating writer process")
+    safe_put(output_queue, None)
+    writer_process.join()
+    logger.debug(f"Writer process {writer_process.pid} joined")
 
     listener.stop()
     logger.info("All processes joined")

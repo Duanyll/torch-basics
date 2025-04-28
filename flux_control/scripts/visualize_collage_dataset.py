@@ -9,6 +9,7 @@ from einops import rearrange
 
 from ..datasets.collage.hf import load_hf_pipeline, decode_latents
 from ..utils.common import meshgrid_to_ij
+from ..utils.describe import describe
 
 
 def visualize_collage(sample: dict, device="cuda", output_file="output.png"):
@@ -45,15 +46,16 @@ def visualize_lmdb(lmdb_path, sample_count=5, device="cuda", output_dir="output"
     # Randomly sample 5 samples from the LMDB
     load_hf_pipeline(device)
     os.makedirs(output_dir, exist_ok=True)
-    env = lmdb.open(lmdb_path, readonly=True, lock=False)
+    env = lmdb.open(lmdb_path, readonly=True, max_dbs=16)
+    db = env.open_db(b"result")
     with env.begin(write=False) as txn:
-        cursor = txn.cursor()
-        keys = [key for key, _ in cursor]
+        cursor = txn.cursor(db)
+        keys = [*cursor.iternext(keys=True, values=False)]
         sample_keys = np.random.choice(keys, size=sample_count, replace=False)
 
     for key in sample_keys:
         with env.begin(write=False) as txn:
-            value = txn.get(key)
+            value = txn.get(key, db=db)
             if value is None:
                 raise KeyError(f"Key {key} not found in LMDB.")
             sample = pickle.loads(value)
@@ -63,6 +65,8 @@ def visualize_lmdb(lmdb_path, sample_count=5, device="cuda", output_dir="output"
         # Visualize the collage
         print(f"Visualizing sample with key: {key.decode()}")
         visualize_collage(sample, device=device, output_file=f"{output_dir}/{key.decode()}.png")
+        describe(sample, max_items=20)
+        
 
 if __name__ == "__main__":
     import argparse

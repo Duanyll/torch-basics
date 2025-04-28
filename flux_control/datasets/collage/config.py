@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, validator
 
 class CollageConfig(BaseModel):
     # Affine
@@ -50,3 +50,7 @@ class CollageConfig(BaseModel):
     # Pipeline
     chance_splat: float = 0.4
     chance_mask_edges: float = 0.4
+    
+    @validator('resolutions_720p', 'resolutions_1080p', pre=True)
+    def convert_lists_to_tuples(cls, v):
+        return [tuple(pair) for pair in v]
