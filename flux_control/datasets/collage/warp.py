@@ -1,6 +1,7 @@
 import torch
 import torch.nn.functional as F
 import einops
+import kornia
 import logging
 from typing import Tuple, Optional
 
@@ -171,6 +172,10 @@ def forward_warp(
         grid = grid.to(device)
         logging.debug("Using provided grid for splatting.")
     else:
+        grid_array = kornia.utils.create_meshgrid(
+            H, W, normalized_coordinates=True, device=device
+        )
+        grid = einops.rearrange(grid_array, "1 h w c -> c h w")  # Shape: 2 H W
         logging.debug("No grid provided.")
 
     # --- Add Batch Dimension for Internal Processing ---

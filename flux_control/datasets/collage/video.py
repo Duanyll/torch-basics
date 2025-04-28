@@ -16,7 +16,6 @@ def load_video(video_path: str):
     video, _, _ = torchvision.io.read_video(
         video_path, output_format="TCHW", pts_unit="sec"
     )
-    video = video.float() / 255.0
     return video
 
 
@@ -101,6 +100,9 @@ def splat_lost_regions(
 def try_extract_frame(
     video: torch.Tensor, device: str = "cuda", cfg: CollageConfig = CollageConfig()
 ):
+    if cfg.frame_interval > 1:
+        video = video[:: cfg.frame_interval]
+
     max_attempts = cfg.num_extract_attempts
     attempt = 0
     require_portrait = random.random() < cfg.chance_portrait
@@ -112,6 +114,7 @@ def try_extract_frame(
             return None
 
         frames = frames.to(device)
+        frames = frames.float() / 255.0
         frames = random_crop(frames, require_portrait)
 
         # 2. Estimate optical flow (GPU)
@@ -119,9 +122,7 @@ def try_extract_frame(
         if flow is not None:
             break
     else:
-        logger.debug(
-            f"Video has invalid optical flow after {max_attempts} attempts."
-        )
+        logger.debug(f"Video has invalid optical flow after {max_attempts} attempts.")
         return None
 
     return flow, frames[0], frames[target_idx]

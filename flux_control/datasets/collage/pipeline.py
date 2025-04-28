@@ -27,6 +27,7 @@ from .segmentation import load_segmentation_model, generate_masks
 from .hf import load_hf_pipeline, encode_latents, encode_prompt
 from .palette import encode_color_palette, extract_palette_from_masked_image
 from .video import load_video, splat_lost_regions, try_extract_frame
+from .warp import forward_warp
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +48,7 @@ def load_all_models(device: str = "cuda"):
 def process_sample(
     video_path: str,
     prompt: str,
-    video_frames: Optional[torch.Tensor] = None,
+    video: Optional[torch.Tensor] = None,
     cfg: CollageConfig = CollageConfig(),
     device: str = "cuda",
 ):
@@ -57,15 +58,12 @@ def process_sample(
 
     video_name = os.path.basename(video_path)
 
-    # 1. Load video (CPU)
-    if video_frames is None:
-        video = load_video(video_path)
-    else:
-        video = video_frames
-
-    extract_result = try_extract_frame(video, device=device, cfg=cfg)
+    extract_result = try_extract_frame(
+        load_video(video_path) if video is None else video, device=device, cfg=cfg
+    )
     if extract_result is None:
         return None
+    del video
 
     flow, src_frame, dst_frame = extract_result
 
@@ -80,17 +78,28 @@ def process_sample(
         flow, depth, masks, cfg=cfg
     )
 
-    # 6. Apply affine transforms (GPU)
-    warped, grid, warped_regions, warped_alpha = apply_transforms(
-        src_frame, depth, transform, cfg=cfg
-    )
-
-    # Chances to fill lost regions with splat
-    if random.random() < cfg.chance_splat:
-        logger.debug(f"Video {video_name} splatting lost regions.")
-        warped, grid, warped_alpha = splat_lost_regions(
-            src_frame, dst_frame, flow, warped, grid, warped_regions, warped_alpha
+    if random.random() < cfg.chance_pre_splat:
+        warped, grid, warped_alpha = forward_warp(
+            src_frame, dst_frame, flow
         )
+        true_alpha_area = torch.mean(warped_alpha, dim=(1, 2)).item()
+        did_splat = True
+    else:
+        warped, grid, warped_regions, warped_alpha, true_alpha_area = apply_transforms(
+            src_frame, depth, transform, cfg=cfg
+        )
+        if random.random() < cfg.chance_post_splat:
+            warped, grid, warped_alpha = splat_lost_regions(
+                src_frame, dst_frame, flow, warped, grid, warped_regions, warped_alpha
+            )
+            did_splat = True
+        else:
+            did_splat = False
+            
+    if true_alpha_area > cfg.true_alpha_threshold:
+        return None
+
+    if did_splat:
         palettes, locations = extract_palette_from_masked_image(
             dst_frame, 1 - warped_alpha, max_colors=cfg.num_palette_fallback, cfg=cfg
         )

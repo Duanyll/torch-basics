@@ -1,4 +1,4 @@
-from pydantic import BaseModel, validator
+from pydantic import BaseModel
 
 class CollageConfig(BaseModel):
     # Affine
@@ -25,6 +25,7 @@ class CollageConfig(BaseModel):
     num_palette_fallback: int = 5
 
     # Video
+    frame_interval: int = 1
     min_frames: int = 5
     max_frames: int = 60
     chance_reverse: float = 0.5
@@ -48,9 +49,7 @@ class CollageConfig(BaseModel):
     num_extract_attempts: int = 5
     
     # Pipeline
-    chance_splat: float = 0.4
+    chance_pre_splat: float = 0.3
+    chance_post_splat: float = 0.2
     chance_mask_edges: float = 0.4
-    
-    @validator('resolutions_720p', 'resolutions_1080p', pre=True)
-    def convert_lists_to_tuples(cls, v):
-        return [tuple(pair) for pair in v]
+    true_alpha_threshold: float = 0.98

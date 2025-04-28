@@ -220,6 +220,7 @@ def apply_transforms(
         (H, W, C + 2), dtype=torch.float32, device=device
     )  # [H, W, C+2]
     canvas_alpha = torch.zeros((H, W, 1), dtype=torch.float32, device=device)
+    true_alpha = torch.zeros((H, W, 1), dtype=torch.float32, device=device)
     warped_regions = torch.zeros((H, W, 1), dtype=torch.float32, device=device)
     z_buffer = torch.ones((H, W, 1), dtype=torch.float32, device=device) * -1.0
 
@@ -256,28 +257,35 @@ def apply_transforms(
         warped_mask = warped_mask.float()
 
         # Erode mask using Kornia
-        kernel = torch.ones(
-            cfg.transform_erode_size, cfg.transform_erode_size, device=device
-        )
-        eroded_mask = (
-            kornia.morphology.erosion(
-                rearrange(warped_mask, "h w 1 -> 1 1 h w"), kernel
+        if cfg.transform_erode_size > 0:
+            kernel = torch.ones(
+                cfg.transform_erode_size, cfg.transform_erode_size, device=device
             )
-            .squeeze(0)
-            .squeeze(0)
-        )  # [H, W]
-        eroded_mask = rearrange(eroded_mask, "h w -> h w 1")  # [H, W, 1]
+            eroded_mask = (
+                kornia.morphology.erosion(
+                    rearrange(warped_mask, "h w 1 -> 1 1 h w"), kernel
+                )
+                .squeeze(0)
+                .squeeze(0)
+            )  # [H, W]
+            eroded_mask = rearrange(eroded_mask, "h w -> h w 1")  # [H, W, 1]
+        else:
+            eroded_mask = warped_mask
 
-        canvas_alpha += eroded_mask
-        canvas_alpha = torch.clamp(canvas_alpha, 0.0, 1.0)
+        canvas_alpha = canvas_alpha + eroded_mask
+        true_alpha = true_alpha + warped_mask
         warped_regions += alpha_mask
         canvas = canvas * (1.0 - warped_mask) + warped_mask * warped_rgb
         z_buffer = z_buffer * (1.0 - warped_mask) + warped_mask * warped_depth
 
+    canvas_alpha = torch.clamp(canvas_alpha, 0.0, 1.0)
+    true_alpha = torch.clamp(true_alpha, 0.0, 1.0)
+    true_alpha_area = torch.mean(true_alpha, dim=[0, 1]).item()
+    
     # Extract results
     transformed_rgb = rearrange(canvas[..., :C], "h w c -> c h w")  # [C, H, W]
     transformed_grid = rearrange(canvas[..., C : C + 2], "h w c -> c h w")  # [2, H, W]
     warped_regions = rearrange(warped_regions, "h w 1 -> h w")  # [H, W]
     canvas_alpha = rearrange(canvas_alpha, "h w 1 -> h w")  # [H, W]
 
-    return transformed_rgb, transformed_grid, warped_regions, canvas_alpha
+    return transformed_rgb, transformed_grid, warped_regions, canvas_alpha, true_alpha_area
