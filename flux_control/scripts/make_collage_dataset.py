@@ -224,7 +224,7 @@ def processor(
             video_path, video, prompt = item
             logger.debug(f"Processor {pid} processing {video_path}")
             result = process_sample(
-                video_path, prompt, video_frames=video, device=gpu_id, cfg=cfg
+                video_path, prompt, video=video, device=gpu_id, cfg=cfg
             )
             del video
             safe_put(output_queue, (video_path, result))
@@ -238,7 +238,7 @@ def processor(
 
 
 def writer(
-    output_queue, progress_queue, lmdb_path, log_queue, lmdb_map_size, num_threads
+    output_queue, progress_queue, lmdb_path, lmdb_map_size, log_queue, num_threads
 ):
     """Writer: Write results to lmdb."""
     torch.set_num_threads(num_threads)

@@ -173,7 +173,7 @@ def forward_warp(
         logging.debug("Using provided grid for splatting.")
     else:
         grid_array = kornia.utils.create_meshgrid(
-            H, W, normalized_coordinates=True, device=device
+            h, w, normalized_coordinates=True, device=device
         )
         grid = einops.rearrange(grid_array, "1 h w c -> c h w")  # Shape: 2 H W
         logging.debug("No grid provided.")

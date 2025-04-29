@@ -82,7 +82,7 @@ def process_sample(
         warped, grid, warped_alpha = forward_warp(
             src_frame, dst_frame, flow
         )
-        true_alpha_area = torch.mean(warped_alpha, dim=(1, 2)).item()
+        true_alpha_area = torch.mean(warped_alpha).item()
         did_splat = True
     else:
         warped, grid, warped_regions, warped_alpha, true_alpha_area = apply_transforms(
