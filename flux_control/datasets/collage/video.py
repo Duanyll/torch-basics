@@ -113,9 +113,9 @@ def try_extract_frame(
         if frames is None:
             return None
 
-        frames = frames.to(device)
         frames = frames.float() / 255.0
         frames = random_crop(frames, require_portrait)
+        frames = frames.to(device)
 
         # 2. Estimate optical flow (GPU)
         flow, target_idx = compute_aggregated_flow(frames, cfg=cfg, device=device)
