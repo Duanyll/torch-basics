@@ -84,3 +84,60 @@ def unpack_bool_tensor(
     unpacked = ((packed.unsqueeze(1) >> torch.arange(8)) & 1).to(torch.bool)
     unpacked = unpacked.view(-1)[: torch.tensor(original_shape).prod()]
     return unpacked.view(original_shape)
+
+
+def find_closest_resolution(h, w, all_resolutions) -> Tuple[int, int]:
+    """Find the closest supported resolution to the image's dimensions."""
+    aspect_ratio = w / h
+    min_diff = float("inf")
+    best_res = (0, 0)
+    
+    all_resolutions = [(res[1], res[0]) for res in all_resolutions] + list(all_resolutions)
+
+    for res in all_resolutions:
+        res_height, res_width = res
+        res_aspect = res_width / res_height
+        # Calculate difference in aspect ratio and total pixels
+        aspect_diff = abs(aspect_ratio - res_aspect)
+        size_diff = abs(w * h - res_width * res_height)
+        total_diff = aspect_diff + size_diff / (
+            w * h
+        )  # Normalize size difference
+
+        if total_diff < min_diff:
+            min_diff = total_diff
+            best_res = (res_height, res_width)
+
+    return best_res
+
+
+def crop_and_resize_image(image, target_size):
+    """
+    Crop and resize image to target size while maintaining aspect ratio.
+    image: (1, C, H, W) or (C, H, W) or (H, W)
+    """
+    if len(image.shape) == 3:
+        image = image.unsqueeze(0)
+    elif len(image.shape) == 2:
+        image = image.unsqueeze(0).unsqueeze(0)
+    
+    img_height, img_width = image.shape[-2:]
+    target_height, target_width = target_size
+    # Calculate aspect ratios
+    img_aspect = img_width / img_height
+    target_aspect = target_width / target_height
+    if img_aspect > target_aspect:
+        # Image is wider than target, crop width
+        new_width = int(img_height * target_aspect)
+        left = (img_width - new_width) // 2
+        image = image[:, :, :, left : left + new_width]
+    else:
+        # Image is taller than target, crop height
+        new_height = int(img_width / target_aspect)
+        top = (img_height - new_height) // 2
+        image = image[:, :, top : top + new_height, :]
+    # Resize to target size
+    image = torch.nn.functional.interpolate(
+        image, size=(target_height, target_width), mode="bilinear", align_corners=False
+    )
+    return image.squeeze()  # Remove batch dimension

@@ -75,7 +75,7 @@ def visualize_grid(grid, mask=None, scale=100):
     return visualize_flow(delta)
 
 
-def show_grayscale_colorbar(image, colormap="viridis", interpolation="bicubic"):
+def show_grayscale_colorbar(image, colormap="viridis", interpolation="bicubic", show=True):
     """
     Show grayscale image with colorbar.
     Args:
@@ -86,10 +86,11 @@ def show_grayscale_colorbar(image, colormap="viridis", interpolation="bicubic"):
     plt.imshow(image, cmap=colormap, interpolation=interpolation)
     plt.colorbar()
     plt.axis("off")
-    plt.show()
+    if show:
+        plt.show()
 
 
-def show_palette_with_locations(image, palettes, locations):
+def show_palette_with_locations(image, palettes, locations, show=True):
     """
     Show image with palettes and locations.
     Args:
@@ -111,10 +112,11 @@ def show_palette_with_locations(image, palettes, locations):
             loc[1], loc[0], color=palette, s=100, marker="o", edgecolors="black"
         )
     plt.axis("off")
-    plt.show()
+    if show:
+        plt.show()
 
 
-def show_image_histogram(image, log_scale=False, show_cdf=False):
+def show_image_histogram(image, log_scale=False, show_cdf=False, show=True):
     """
     Display histogram for an RGB or grayscale image with optional CDF curve.
     Args:
@@ -202,10 +204,11 @@ def show_image_histogram(image, log_scale=False, show_cdf=False):
         ax1.set_yscale("log")
 
     ax1.grid(True, alpha=0.3)
-    plt.show()
+    if show:
+        plt.show()
     
 
-def show_color_palette(palette: torch.Tensor, show_hex: bool = True, figsize=(8, 2)):
+def show_color_palette(palette: torch.Tensor, show_hex: bool = True, figsize=(8, 2), show=True):
     """
     在 Jupyter 中显示一个色卡。
 
@@ -242,4 +245,5 @@ def show_color_palette(palette: torch.Tensor, show_hex: bool = True, figsize=(8,
                 color="white" if color.mean() < 0.5 else "black",
             )
 
-    plt.show()
+    if show:
+        plt.show()

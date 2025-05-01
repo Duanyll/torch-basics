@@ -200,7 +200,7 @@ def processor(
     logger.info(f"Processor {pid} started on GPU {gpu_id} with {num_threads} threads")
     torch.cuda.set_device(gpu_id)
 
-    from ..datasets.collage.pipeline import process_sample, load_all_models
+    from ..datasets.collage.pipeline import process_video_sample, load_all_models
 
     cfg = load_config_file(config_path)
     load_all_models(gpu_id)
@@ -214,7 +214,7 @@ def processor(
                 break
             video_path, video, prompt = item
             logger.debug(f"Processor {pid} processing {video_path}")
-            result = process_sample(
+            result = process_video_sample(
                 video, prompt, device=gpu_id, cfg=cfg
             )
             del video
