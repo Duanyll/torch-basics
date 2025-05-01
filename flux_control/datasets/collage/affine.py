@@ -6,100 +6,61 @@ import random
 from einops import rearrange
 import logging
 
+from ...utils.common import make_grid
+
 from .config import CollageConfig
 
 logger = logging.getLogger(__name__)
 
 
-def compute_transform_data(flow, depth, masks):
-    """
-    Compute transform data for each mask.
-
-    Args:
-        src_image (torch.Tensor): [C, H, W] tensor, possibly on GPU
-        flow (torch.Tensor): [2, H, W] tensor, possibly on GPU
-        depth (torch.Tensor): [H, W] tensor, possibly on GPU
-        masks (list of np.ndarray): list of [H, W] bool arrays
-
-    Returns:
-        list of dicts: each dict contains 'area', 'avg_depth', 'affine_trans'
-    """
-    transform_data = []
-
-    for mask in masks:
-        mask_torch = torch.from_numpy(mask)
-
-        # Compute area
-        area = torch.sum(mask_torch).item()
-        if area <= 300:
-            continue
-
-        # Compute median depth (inverse depth)
-        masked_depth = depth[mask_torch]
-        avg_depth = torch.median(1.0 / (masked_depth + 1e-6)).item()
-
-        # Sample 50 random points
-        all_y, all_x = np.nonzero(mask)
-        if len(all_y) < 50:
-            continue
-        rand_indices = np.random.choice(len(all_y), size=50, replace=False)
-        src_points = np.array([all_x[rand_indices], all_y[rand_indices]]).T
-
-        # Compute target points using flow
-        flow_np = flow.cpu().numpy()
-        tgt_points = src_points + flow_np[:, src_points[:, 1], src_points[:, 0]].T
-
-        # Estimate affine transform on CPU
-        affine_trans, inliers = cv2.estimateAffinePartial2D(
-            src_points.astype(np.float32), tgt_points.astype(np.float32)
-        )
-
-        transform_data.append(
-            {
-                "area": area,
-                "avg_depth": avg_depth,
-                "affine_trans": affine_trans,
-                "mask": mask,  # Store mask for use in apply_transforms
-            }
-        )
-
-    return transform_data
-
-
 def compute_transform_data_structured(
     flow: torch.Tensor,
-    depth: torch.Tensor,
-    masks: list[np.ndarray],
+    depth: torch.Tensor | None,
+    masks: torch.Tensor,  # Shape: NHW, on GPU
     cfg: CollageConfig = CollageConfig(),
 ):
-    if len(masks) == 0:
+    if masks.shape[0] == 0:
         return [], []
 
-    total_area = depth.shape[0] * depth.shape[1]
+    device = masks.device
+    total_area = flow.shape[1] * flow.shape[2]
     min_area = int(cfg.min_object_area * total_area)
     max_drop_area = int(cfg.max_drop_area * total_area)
     mask_data = []
 
-    for mask in masks:
-        area = np.sum(mask)
-        if area <= min_area:
-            continue
-        mask_data.append({"area": area, "mask": mask})
+    # Compute areas on GPU
+    areas = torch.sum(masks, dim=(1, 2))  # Shape: N
+    valid_mask = areas > min_area
+    valid_indices = torch.nonzero(valid_mask).squeeze(1)
 
-    mask_data.sort(key=lambda x: x["area"], reverse=True)
+    if valid_indices.numel() == 0:
+        return [], []
+
+    # Filter masks and areas
+    valid_masks = masks[valid_indices]  # Shape: N'HW
+    valid_areas = areas[valid_indices]  # Shape: N'
+
+    # Sort by area (descending)
+    sorted_indices = torch.argsort(valid_areas, descending=True)
+    valid_masks = valid_masks[sorted_indices]
+    valid_areas = valid_areas[sorted_indices]
+
+    # Create mask_data list
+    mask_data = [
+        {"area": area.item(), "mask": mask, "remaining": mask.clone()}
+        for area, mask in zip(valid_areas, valid_masks)
+    ]
+
+    # Find parent-child relationships
     for i in range(len(mask_data) - 1, -1, -1):
         current = mask_data[i]["mask"]
         for j in range(i - 1, -1, -1):
             candidate = mask_data[j]["mask"]
-            if np.sum(current & candidate) > mask_data[i]["area"] * 0.9:
+            intersection = torch.sum(current & candidate).item()
+            if intersection > mask_data[i]["area"] * 0.9:
                 mask_data[i]["parent"] = j
                 mask_data[j]["has_child"] = True
-                if not "remaining" in mask_data[j]:
-                    mask_data[j]["remaining"] = candidate.copy()
-                # mask_data[j]["remaining"] -= current
-                mask_data[j]["remaining"] = np.logical_and(
-                    mask_data[j]["remaining"], np.logical_not(current)
-                )
+                mask_data[j]["remaining"] = mask_data[j]["remaining"] & ~current
                 break
 
     selected_masks = []
@@ -123,7 +84,7 @@ def compute_transform_data_structured(
                 node["finalized"] = True
                 selected_masks.append(data)
             elif rand <= cfg.chance_keep_stem + cfg.chance_split_stem:
-                remain_area = np.sum(node["remaining"])
+                remain_area = torch.sum(node["remaining"]).item()
                 if remain_area > min_area:
                     remain_data = {"area": remain_area, "mask": node["remaining"]}
                     if (
@@ -144,28 +105,39 @@ def compute_transform_data_structured(
                 dropped_masks.append(data)
 
     # Compute depth and affine transform for selected masks
-    flow_np = flow.cpu().numpy()
-    for mask in selected_masks:
-        mask_np = mask["mask"]
-        mask_torch = torch.from_numpy(mask_np)
+    for mask_dict in selected_masks:
+        mask_torch = mask_dict["mask"]
 
-        masked_depth = depth[mask_torch]
-        avg_depth = torch.mean(masked_depth).item()
-        mask["avg_depth"] = avg_depth
+        if depth is not None:
+            masked_depth = depth[mask_torch]
+            avg_depth = torch.mean(masked_depth).item()
+            mask_dict["avg_depth"] = avg_depth
 
-        # Sample 50 random points
-        all_y, all_x = np.nonzero(mask_np)
-        rand_indices = np.random.choice(
-            len(all_y), size=cfg.num_estimate_affine_samples, replace=False
-        )
-        src_points = np.array([all_x[rand_indices], all_y[rand_indices]]).T
-        tgt_points = src_points + flow_np[:, src_points[:, 1], src_points[:, 0]].T
+        # Sample 50 random points on GPU
+        nonzero_coords = torch.nonzero(mask_torch, as_tuple=False)  # Shape: Kx2
+        if len(nonzero_coords) < cfg.num_estimate_affine_samples:
+            continue
+        rand_indices = torch.randperm(len(nonzero_coords))[
+            : cfg.num_estimate_affine_samples
+        ]
+        src_points = nonzero_coords[rand_indices].float()  # Shape: 50x2 (y, x)
 
-        # Estimate affine transform on CPU
+        # Compute target points using flow
+        src_y, src_x = src_points[:, 0], src_points[:, 1]
+        flow_at_points = flow[:, src_y.long(), src_x.long()].permute(
+            1, 0
+        )  # Shape: 50x2
+        tgt_points = src_points + flow_at_points
+
+        # Transfer to CPU for cv2
+        src_points_np = src_points.cpu().numpy()
+        tgt_points_np = tgt_points.cpu().numpy()
+
+        # Estimate affine transform
         affine_trans, inliers = cv2.estimateAffinePartial2D(
-            src_points.astype(np.float32), tgt_points.astype(np.float32)
+            src_points_np.astype(np.float32), tgt_points_np.astype(np.float32)
         )
-        mask["affine_trans"] = affine_trans
+        mask_dict["affine_trans"] = affine_trans
 
     logger.debug(
         "Compute transform data: %d masks selected, %d dropped",
@@ -178,82 +150,84 @@ def compute_transform_data_structured(
 
 @torch.no_grad()
 def apply_transforms(
-    image, depth, transform_data, cfg: CollageConfig = CollageConfig()
+    image, depth, transform_data, grid=None, cfg: CollageConfig = CollageConfig()
 ):
     """
-    Apply transforms to the image based on transform data using GPU and einops for enhanced readability.
+    Apply transforms to the image based on transform data using GPU, maintaining CHW format.
 
     Args:
         image (torch.Tensor): [C, H, W] tensor on GPU, float32 (RGB channels)
-        depth (torch.Tensor): [H, W] tensor on GPU, float32 (depth values, 0=far, 1=near)
+        depth (torch.Tensor | None): [H, W] tensor on GPU, float32 (depth values, 0=far, 1=near)
+        grid (torch.Tensor | None): [2, H, W] tensor on GPU, float32 (optional)
         transform_data (list of dicts): output from compute_transform_data, each dict contains:
             - affine_trans (numpy.ndarray): 2x3 affine transformation matrix
-            - mask (numpy.ndarray): [H, W] binary mask
+            - mask (torch.Tensor): [H, W] binary mask
             - avg_depth (float): average depth for sorting (0=far, 1=near)
 
     Returns:
-        tuple: (transformed_rgb, transformed_grid, warped_regions, canvas_alpha)
+        tuple: (transformed_rgb, transformed_grid, src_mask, tgt_mask)
             - transformed_rgb: [C, H, W] transformed RGB image
             - transformed_grid: [2, H, W] transformed coordinate grid
-            - warped_regions: [H, W] binary mask of warped regions
-            - canvas_alpha: [H, W] accumulated alpha mask
+            - src_mask: [H, W] binary mask of warped regions
+            - tgt_mask: [H, W] accumulated alpha mask
     """
     device = image.device
     H, W = image.shape[1:]
     C = image.shape[0]
 
-    # Validate depth shape and convert to [H, W, 1]
-    if depth.shape != (H, W):
-        raise ValueError(f"Expected depth shape [H, W], got {depth.shape}")
-    depth = depth.unsqueeze(-1)  # [H, W, 1]
+    # Validate depth shape and convert to [1, H, W]
+    if depth is not None:
+        if depth.shape != (H, W):
+            raise ValueError(f"Expected depth shape [H, W], got {depth.shape}")
+        depth = depth.unsqueeze(0)  # [1, H, W]
+    else:
+        depth = torch.zeros((1, H, W), dtype=torch.float32, device=device)
 
-    # Create coordinate grid on GPU
-    grid_array = kornia.utils.create_meshgrid(
-        H, W, normalized_coordinates=True, device=device
-    )
-    grid_array = rearrange(grid_array, "1 h w c -> h w c")  # [H, W, 2]
+    if grid is None:
+        grid = make_grid(H, W, device=device)  # [2, H, W]
 
-    # Prepare source array
-    src_array = rearrange(image, "c h w -> h w c")  # [H, W, C]
-    src_array = torch.cat([src_array, grid_array, depth], dim=-1)  # [H, W, C+3]
-    canvas = torch.zeros(
-        (H, W, C + 2), dtype=torch.float32, device=device
-    )  # [H, W, C+2]
-    canvas_alpha = torch.zeros((H, W, 1), dtype=torch.float32, device=device)
-    true_alpha = torch.zeros((H, W, 1), dtype=torch.float32, device=device)
-    warped_regions = torch.zeros((H, W, 1), dtype=torch.float32, device=device)
-    z_buffer = torch.ones((H, W, 1), dtype=torch.float32, device=device) * -1.0
+    # Prepare source tensor: concatenate image, grid, and depth
+    src_tensor = torch.cat([image, grid, depth], dim=0)  # [C+3, H, W]
+    canvas = torch.zeros((C+2, H, W), dtype=torch.float32, device=device)  # [C+2, H, W]
+    tgt_mask = torch.zeros((1, H, W), dtype=torch.float32, device=device)  # [1, H, W]
+    src_mask = torch.zeros((1, H, W), dtype=torch.float32, device=device)  # [1, H, W]
+    z_buffer = torch.ones((1, H, W), dtype=torch.float32, device=device) * -1.0  # [1, H, W]
 
     # Sort by depth (far to near)
-    sorted_indices = sorted(
-        range(len(transform_data)), key=lambda i: transform_data[i]["avg_depth"]
-    )
+    if transform_data[0].get("avg_depth") is not None:
+        sorted_indices = sorted(
+            range(len(transform_data)), key=lambda i: transform_data[i]["avg_depth"]
+        )
+    else:
+        sorted_indices = list(range(len(transform_data)))
 
     for idx in sorted_indices:
         data = transform_data[idx]
-        affine_trans = torch.from_numpy(data["affine_trans"]).to(device).float()
-        mask = torch.from_numpy(data["mask"]).to(device).float()[..., None]
+        affine_trans = torch.from_numpy(data["affine_trans"]).to(device).float()  # [2, 3]
+        mask = data["mask"].to(device).float().unsqueeze(0)  # [1, H, W]
+        
+        if cfg.transform_dilate_size > 0:
+            kernel = torch.ones(
+                cfg.transform_dilate_size, cfg.transform_dilate_size, device=device
+            )
+            mask = kornia.morphology.dilation(mask.unsqueeze(0), kernel).squeeze(0)
 
         # Prepare alpha mask
-        alpha_mask = mask * (warped_regions < 0.5).float()
-        src_rgba = torch.cat([src_array, alpha_mask], dim=-1)  # [H, W, C+4]
-        src_rgba = rearrange(src_rgba, "h w c -> 1 c h w")  # [1, C+4, H, W]
+        alpha_mask = mask * (src_mask < 0.5).float()  # [1, H, W]
+        src_rgba = torch.cat([src_tensor, alpha_mask], dim=0)  # [C+4, H, W]
 
         # Apply affine transform using Kornia
         warp_dst = kornia.geometry.transform.warp_affine(
-            src_rgba, affine_trans[None, :2, :], (H, W)
-        ).squeeze(
-            0
-        )  # [C+4, H, W]
-        warp_dst = rearrange(warp_dst, "c h w -> h w c")  # [H, W, C+4]
+            src_rgba.unsqueeze(0), affine_trans[None, :2, :], (H, W)
+        ).squeeze(0)  # [C+4, H, W]
 
-        warped_mask = warp_dst[..., -1:]  # [H, W, 1]
-        warped_rgb = warp_dst[..., : C + 2]  # [H, W, C+2]
-        warped_depth = warp_dst[..., C + 2 : C + 3]  # [H, W, 1]
+        warped_mask = warp_dst[-1:, :, :]  # [1, H, W]
+        warped_rgb = warp_dst[:C+2, :, :]  # [C+2, H, W]
+        warped_depth = warp_dst[C+2:C+3, :, :]  # [1, H, W]
 
         # Update z-buffer and canvas
-        good_z_region = warped_depth > z_buffer
-        warped_mask = (warped_mask > 0.5) & good_z_region
+        good_z_region = warped_depth >= z_buffer  # [1, H, W]
+        warped_mask = (warped_mask > 0.5) & good_z_region  # [1, H, W]
         warped_mask = warped_mask.float()
 
         # Erode mask using Kornia
@@ -261,31 +235,24 @@ def apply_transforms(
             kernel = torch.ones(
                 cfg.transform_erode_size, cfg.transform_erode_size, device=device
             )
-            eroded_mask = (
-                kornia.morphology.erosion(
-                    rearrange(warped_mask, "h w 1 -> 1 1 h w"), kernel
-                )
-                .squeeze(0)
-                .squeeze(0)
-            )  # [H, W]
-            eroded_mask = rearrange(eroded_mask, "h w -> h w 1")  # [H, W, 1]
+            eroded_mask = kornia.morphology.erosion(
+                warped_mask.unsqueeze(0), kernel
+            ).squeeze(0)  # [1, H, W]
         else:
             eroded_mask = warped_mask
 
-        canvas_alpha = canvas_alpha + eroded_mask
-        true_alpha = true_alpha + warped_mask
-        warped_regions += alpha_mask
-        canvas = canvas * (1.0 - warped_mask) + warped_mask * warped_rgb
-        z_buffer = z_buffer * (1.0 - warped_mask) + warped_mask * warped_depth
+        tgt_mask = tgt_mask + eroded_mask  # [1, H, W]
+        src_mask = src_mask + alpha_mask  # [1, H, W]
+        canvas = canvas * (1.0 - warped_mask) + warped_mask * warped_rgb  # [C+2, H, W]
+        z_buffer = z_buffer * (1.0 - warped_mask) + warped_mask * warped_depth  # [1, H, W]
 
-    canvas_alpha = torch.clamp(canvas_alpha, 0.0, 1.0)
-    true_alpha = torch.clamp(true_alpha, 0.0, 1.0)
-    true_alpha_area = torch.mean(true_alpha, dim=[0, 1]).item()
-    
+    src_mask = torch.clamp(src_mask, 0.0, 1.0)
+    tgt_mask = torch.clamp(tgt_mask, 0.0, 1.0)  # [1, H, W]
+
     # Extract results
-    transformed_rgb = rearrange(canvas[..., :C], "h w c -> c h w")  # [C, H, W]
-    transformed_grid = rearrange(canvas[..., C : C + 2], "h w c -> c h w")  # [2, H, W]
-    warped_regions = rearrange(warped_regions, "h w 1 -> h w")  # [H, W]
-    canvas_alpha = rearrange(canvas_alpha, "h w 1 -> h w")  # [H, W]
+    transformed_rgb = canvas[:C, :, :]  # [C, H, W]
+    transformed_grid = canvas[C:C+2, :, :]  # [2, H, W]
+    src_mask = src_mask.squeeze(0)  # [H, W]
+    tgt_mask = tgt_mask.squeeze(0)  # [H, W]
 
-    return transformed_rgb, transformed_grid, warped_regions, canvas_alpha, true_alpha_area
+    return transformed_rgb, transformed_grid, src_mask, tgt_mask

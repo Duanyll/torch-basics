@@ -1,3 +1,4 @@
+import tomllib
 from pydantic import BaseModel
 
 class CollageConfig(BaseModel):
@@ -9,6 +10,7 @@ class CollageConfig(BaseModel):
     chance_split_stem: float = 0.75
     num_estimate_affine_samples: int = 50
     transform_erode_size: int = 3
+    transform_dilate_size: int = 3
 
     # Flow
     median_filter_kernel_size: int = 5
@@ -46,10 +48,17 @@ class CollageConfig(BaseModel):
         (1344, 704),
     ]
     chance_portrait: float = 0.2
-    num_extract_attempts: int = 5
+    num_extract_attempts: int = 3
     
     # Pipeline
-    chance_pre_splat: float = 0.3
-    chance_post_splat: float = 0.2
-    chance_mask_edges: float = 0.4
-    true_alpha_threshold: float = 0.98
+    confidence_tanh_scale: float = 10.0
+    palette_fg_colors: int = 4
+    palette_bg_colors: int = 4
+    simplify_kernel_size: int = 51
+    simplify_sigma: float = 20.0
+    
+    @classmethod
+    def from_toml(cls, file_path: str) -> "CollageConfig":
+        with open(file_path, "rb") as f:
+            data = tomllib.load(f)
+        return cls(**data)

@@ -1,8 +1,9 @@
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, ConcatDataset
 from datasets import load_dataset
 
 from .mock import MockDataset, MockCollageDataset
-from .lmdb import LMDBDataset, MultiLMDBDataset
+from .lmdb import LMDBDataset
+
 
 def parse_dataset(dataset_config) -> Dataset:
     if not isinstance(dataset_config, dict):
@@ -11,7 +12,6 @@ def parse_dataset(dataset_config) -> Dataset:
         raise ValueError("dataset_config must contain a 'type' key.")
     dataset_type = dataset_config.pop("type")
 
-    # Currently, we only support the "huggingface" dataset type.
     if dataset_type == "huggingface":
         dataset = load_dataset(**dataset_config)
         if isinstance(dataset, Dataset):
@@ -26,7 +26,10 @@ def parse_dataset(dataset_config) -> Dataset:
         return MockCollageDataset(**dataset_config)
     elif dataset_type == "lmdb":
         return LMDBDataset(**dataset_config)
-    elif dataset_type == "multi_lmdb":
-        return MultiLMDBDataset(**dataset_config)
+    elif dataset_type == "multi":
+        datasets = []
+        for _, value in dataset_config.items():
+            datasets.append(parse_dataset(value))
+        return ConcatDataset(datasets)
     else:
         raise ValueError(f"Unsupported dataset type: {dataset_type}")

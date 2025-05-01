@@ -34,20 +34,3 @@ class LMDBDataset(Dataset):
     def __del__(self):
         if hasattr(self, "env") and self.env is not None:
             self.env.close()
-
-
-class MultiLMDBDataset(Dataset):
-    def __init__(self, paths: list[str], db_name: str | None = None):
-        self.datasets = [
-            LMDBDataset(path, db_name) for path in paths
-        ]
-
-    def __len__(self):
-        return sum(len(dataset) for dataset in self.datasets)
-
-    def __getitem__(self, idx):
-        for dataset in self.datasets:
-            if idx < len(dataset):
-                return dataset[idx]
-            idx -= len(dataset)
-        raise IndexError(f"Index {idx} out of range.")

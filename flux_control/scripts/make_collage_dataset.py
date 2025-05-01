@@ -143,23 +143,11 @@ def load_caption_file(caption_file):
     return captions
 
 
-def load_video(video_path):
-    """Load and normalize video."""
-    logger.debug(f"Loading video {video_path}")
-    video, _, _ = torchvision.io.read_video(
-        video_path, output_format="TCHW", pts_unit="sec", end_pts=10
-    )
-    logger.debug(f"Loaded video {video_path}, shape={video.shape}")
-    return video
-
-
 def load_config_file(config_path):
     from ..datasets.collage.config import CollageConfig
 
     if config_path is not None:
-        with open(config_path, "rb") as f:
-            config = tomllib.load(f)
-        return CollageConfig(**config)
+        return CollageConfig.from_toml(config_path)
     else:
         return CollageConfig()
 
@@ -172,6 +160,9 @@ def loader(
     pid = os.getpid()
     make_logger_for_worker(f"Loader-{pid}", log_queue)
     logger.info(f"Loader {pid} started with {num_threads} threads")
+    
+    from ..datasets.collage.video import load_video
+    
     try:
         while True:
             video_path = safe_get(loader_queue)
@@ -224,7 +215,7 @@ def processor(
             video_path, video, prompt = item
             logger.debug(f"Processor {pid} processing {video_path}")
             result = process_sample(
-                video_path, prompt, video=video, device=gpu_id, cfg=cfg
+                video, prompt, device=gpu_id, cfg=cfg
             )
             del video
             safe_put(output_queue, (video_path, result))

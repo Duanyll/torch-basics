@@ -278,7 +278,7 @@ def cuda_launch(strKey: str):
 
 def softsplat(
     tenIn: torch.Tensor, tenFlow: torch.Tensor, tenMetric: torch.Tensor, strMode: str
-):
+) -> torch.Tensor:
     assert strMode.split("-")[0] in ["sum", "avg", "linear", "soft"]
 
     if strMode == "sum":

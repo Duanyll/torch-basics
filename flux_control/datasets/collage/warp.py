@@ -5,32 +5,8 @@ import kornia
 import logging
 from typing import Tuple, Optional
 
-# Assume softsplat is available and imported, e.g.:
-# import softsplat
-# If softsplat is not available, you might need a placeholder for testing:
-try:
-    from . import softsplat
-except ImportError:
-    logging.error("softsplat package not found. Please install it.")
-
-    # Define a placeholder if needed for basic structure testing (will not work functionally)
-    class SoftsplatPlaceholder:
-        @staticmethod
-        def softsplat(tenIn, tenFlow, tenMetric, strMode):
-            logging.warning(
-                "Using placeholder for softsplat.softsplat - actual splatting will not occur."
-            )
-            # Simple passthrough or zero tensor might be needed depending on downstream code
-            # This placeholder just returns the input, which is incorrect for actual use.
-            # return tenIn
-            # Returning zeros might be safer if downstream code expects a splatted result
-            return torch.zeros_like(tenIn)
-
-    softsplat = SoftsplatPlaceholder()
-
-
-# --- Helper Function: Backwarp ---
-# Kept separate for clarity, but cache removed and uses input tensor shapes directly
+from .softsplat import softsplat
+from ...utils.common import make_grid
 
 
 def backwarp(tenIn: torch.Tensor, tenFlow: torch.Tensor) -> torch.Tensor:
@@ -109,7 +85,7 @@ def forward_warp(
     flow: torch.Tensor,
     grid: Optional[torch.Tensor] = None,
     mask: Optional[torch.Tensor] = None,
-) -> Tuple[torch.Tensor, Optional[torch.Tensor], torch.Tensor]:
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Performs forward warping (softmax splatting) on a source frame,
     optionally including a coordinate grid and a mask, using an optical flow field.
@@ -127,7 +103,7 @@ def forward_warp(
     Returns:
         Tuple[torch.Tensor, Optional[torch.Tensor], torch.Tensor]: A tuple containing:
             - splatted_rgb (torch.Tensor): The splatted RGB frame (C H W).
-            - splatted_grid (Optional[torch.Tensor]): The splatted coordinate grid (2 H W)
+            - splatted_grid (torch.Tensor): The splatted coordinate grid (2 H W)
                                                     if `grid` was provided, else None.
             - splatted_mask (torch.Tensor): The splatted mask (H W), representing
                                            flow contribution/occlusion. Values are floats.
@@ -161,7 +137,6 @@ def forward_warp(
     else:
         # Create a default mask of ones (1 H W)
         processed_mask = torch.ones((1, h, w), dtype=torch.float32, device=device)
-        logging.debug("No mask provided, using default mask of ones.")
 
     # Handle optional grid
     if grid is not None:
@@ -170,13 +145,8 @@ def forward_warp(
                 f"Grid must be 3D tensor (2HW) with shape {(2, h, w)}, got {grid.shape}"
             )
         grid = grid.to(device)
-        logging.debug("Using provided grid for splatting.")
     else:
-        grid_array = kornia.utils.create_meshgrid(
-            h, w, normalized_coordinates=True, device=device
-        )
-        grid = einops.rearrange(grid_array, "1 h w c -> c h w")  # Shape: 2 H W
-        logging.debug("No grid provided.")
+        grid = make_grid(h, w, device=device)
 
     # --- Add Batch Dimension for Internal Processing ---
     # Use einops for clarity, equivalent to tensor.unsqueeze(0)
@@ -184,15 +154,13 @@ def forward_warp(
     tgt_frame_b = einops.rearrange(tgt_frame, "c h w -> 1 c h w")
     flow_b = einops.rearrange(flow, "c h w -> 1 c h w")
     mask_b = einops.rearrange(processed_mask, "c h w -> 1 c h w")
-    grid_b = einops.rearrange(grid, "c h w -> 1 c h w") if grid is not None else None
+    grid_b = einops.rearrange(grid, "c h w -> 1 c h w")
 
     # --- Concatenate Tensors for Splatting ---
     # Concatenate source data: [src_rgb, (optional) grid, mask]
-    src_list = [src_frame_b]
-    if grid_b is not None:
-        src_list.append(grid_b)
-    src_list.append(mask_b)
-    tenOne = torch.cat(src_list, dim=1)  # Shape: N (C+2+1) H W or N (C+1) H W
+    tenOne = torch.cat(
+        [src_frame_b, grid_b, mask_b], dim=1
+    )  # Shape: N (C+2+1) H W or N (C+1) H W
 
     # Concatenate target data for metric calculation.
     # Only the RGB part of the target is needed for the L1 metric.
@@ -206,14 +174,10 @@ def forward_warp(
     tgt_list.append(torch.zeros_like(mask_b))
     tenTwo = torch.cat(tgt_list, dim=1)  # Shape matches tenOne
 
-    logging.debug(f"Combined source tensor 'tenOne' shape: {tenOne.shape}")
-    logging.debug(f"Combined target tensor 'tenTwo' shape: {tenTwo.shape}")
-
     # --- Calculate Importance Metric ---
     # Metric is based on L1 loss between src and backwarped target (RGB only)
     # Using only first 3 channels (RGB) as per original 'partial=True' logic
     c_metric = min(c, c_tgt, 3)  # Use min channels up to 3 for metric
-    logging.debug(f"Calculating metric using first {c_metric} channels.")
 
     warped_tgt_rgb = backwarp(tenIn=tenTwo[:, :c_metric, :, :], tenFlow=flow_b)
     tenMetric = F.l1_loss(
@@ -227,16 +191,14 @@ def forward_warp(
     tenMetric = (alpha * tenMetric).clip(
         min=alpha, max=-alpha
     )  # Clip between -20 and 20
-    logging.debug("Calculated and processed importance metric.")
 
     # --- Perform Soft Splatting ---
     # tenIn: Contains [src_rgb, (optional) grid, mask]
     # tenFlow: Optical flow
     # tenMetric: Importance weights
-    tenSoftmax = softsplat.softsplat(
+    tenSoftmax = softsplat(
         tenIn=tenOne, tenFlow=flow_b, tenMetric=tenMetric, strMode="soft"
     )
-    logging.debug(f"Softsplatting complete. Result shape: {tenSoftmax.shape}")
 
     # --- Extract and Return Results ---
     # Remove batch dimension
@@ -244,18 +206,8 @@ def forward_warp(
 
     # Extract RGB
     splatted_rgb = splatted_data[:c, :, :]
-    current_idx = c
-
-    # Extract Grid (if applicable)
-    splatted_grid = None
-    if grid is not None:
-        splatted_grid = splatted_data[current_idx : current_idx + 2, :, :]
-        current_idx += 2
-        logging.debug("Extracted splatted grid.")
-
-    # Extract Mask (last channel) and remove channel dimension
-    splatted_mask = splatted_data[current_idx, :, :]  # Shape: H W
-    logging.debug("Extracted splatted mask.")
+    splatted_grid = splatted_data[c : c + 2, :, :]
+    splatted_mask = splatted_data[c + 2, :, :]  # Shape: H W
 
     return splatted_rgb, splatted_grid, splatted_mask
 

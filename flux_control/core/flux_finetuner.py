@@ -444,7 +444,7 @@ class FluxFinetuner(BaseModel):
 
         num_trainable_params = sum(p.numel() for p in parameters)
         self._info(
-            f"{optimzer.__class__.__name__} created with {num_trainable_params} trainable parameters"
+            f"{optimzer.__class__.__name__} created with {num_trainable_params / (1024 * 1024):.2f}M trainable parameters"
         )
         return optimzer
 

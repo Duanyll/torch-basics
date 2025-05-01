@@ -1,8 +1,10 @@
+from regex import W
 import torch
 import kornia
 import kornia.color as color
 from typing import Optional
 from einops import rearrange
+from ...utils.common import make_grid
 from .config import CollageConfig
 from .kmeans import kmeans, get_cluster_centers_scatter
 
@@ -22,10 +24,8 @@ def extract_palette_from_masked_image(
         device = image.device
 
     H, W = image.shape[1], image.shape[2]
-    grid = kornia.utils.create_meshgrid(
-        H, W, normalized_coordinates=True, device=device
-    )
-    grid = rearrange(grid, "1 h w c -> (h w) c")
+    grid = make_grid(H, W, device=device)  # (2, H, W)
+    grid = rearrange(grid, "c h w -> (h w) c")
 
     # 1. 提取 masked 像素
     mask_flat = mask.flatten()
@@ -78,10 +78,8 @@ def extract_palette_from_masked_image_with_spatial(
         device = image.device
 
     H, W = image.shape[1], image.shape[2]
-    grid = kornia.utils.create_meshgrid(
-        H, W, normalized_coordinates=True, device=device
-    )
-    grid = rearrange(grid, "1 h w c -> (h w) c")
+    grid = make_grid(H, W, device=device)  # (2, H, W)
+    grid = rearrange(grid, "c h w -> (h w) c")
 
     mask_flat = mask.flatten()
     img_flat = rearrange(image, "c h w -> (h w) c")  # (H * W, 3)
@@ -131,46 +129,6 @@ def extract_palette_from_masked_image_with_spatial(
     return rgb_centers, locations.squeeze(0)
 
 
-def show_color_palette(palette: torch.Tensor, show_hex: bool = True, figsize=(8, 2)):
-    """
-    在 Jupyter 中显示一个色卡。
-
-    Args:
-        palette (Tensor): (N, 3) RGB float tensor in [0, 1]
-        show_hex (bool): 是否显示颜色值（Hex格式）
-        figsize (tuple): 图像尺寸
-    """
-
-    import matplotlib.pyplot as plt
-    import matplotlib.patches as patches
-
-    assert palette.ndim == 2 and palette.shape[1] == 3
-
-    n_colors = palette.shape[0]
-    fig, ax = plt.subplots(1, figsize=figsize)
-    ax.set_xlim(0, n_colors)
-    ax.set_ylim(0, 1)
-    ax.axis("off")
-
-    for i, color in enumerate(palette):
-        rgb = color.cpu().numpy() if isinstance(color, torch.Tensor) else color
-        hex_code = "#%02x%02x%02x" % tuple((rgb * 255).astype(int))
-        rect = patches.Rectangle((i, 0), 1, 1, color=rgb)
-        ax.add_patch(rect)
-        if show_hex:
-            ax.text(
-                i + 0.5,
-                0.5,
-                hex_code,
-                ha="center",
-                va="center",
-                fontsize=12,
-                color="white" if color.mean() < 0.5 else "black",
-            )
-
-    plt.show()
-
-
 def encode_color_palette(image: torch.Tensor, masks, cfg: CollageConfig):
     palettes = []
     locations = []
@@ -202,3 +160,46 @@ def encode_color_palette(image: torch.Tensor, masks, cfg: CollageConfig):
     locations = torch.cat(locations, dim=0)
 
     return palettes, locations
+
+
+def palette_downsample(image, mask=None, colors=4, spatial_weight=0.5):
+    """
+    Downsample the image to a palette of colors.
+    :param image: (3, H, W), RGB float32, range 0-1
+    :param mask: (H, W), bool or {0, 1}
+    :param colors: number of colors in the palette
+    :return: (3, H, W), RGB float32, range 0-1
+    """
+
+    c, h, w = image.shape
+
+    image_flat = rearrange(image, "c h w -> (h w) c")  # (H * W, 3)
+    
+    if spatial_weight > 0:
+        grid = make_grid(h, w, device=image.device)
+        grid = rearrange(grid, "c h w -> (h w) c")
+        image_flat = torch.cat(
+            [image_flat, spatial_weight * grid], dim=1
+        )
+    
+    if mask is not None:
+        if torch.is_floating_point(mask):
+            mask = mask > 0.5
+        mask_flat = mask.flatten()
+        pixels = image_flat[mask_flat.bool()]  # (N, 3)
+    else:
+        pixels = image_flat
+
+    idx, centers = kmeans(pixels, cluster_num=colors)
+    pixels = centers[idx]
+    
+    if mask is not None:
+        result = torch.zeros_like(image_flat)
+        result[mask_flat] = pixels
+    else:
+        result = pixels
+        
+    result = rearrange(result, "(h w) c -> c h w", h=h, w=w)
+    if spatial_weight > 0:
+        result = result[:c, :, :]
+    return result
