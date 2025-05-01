@@ -22,7 +22,7 @@ class CollageConfig(BaseModel):
     delta_e_threshold: float = 15.0
     max_cluster_samples: int = 100000
     palette_spatial_weight: float = 0.5
-    palette_area_threshold: float = 0.03
+    palette_area_threshold: float = 0.01
     palette_per_mask: int = 3
     num_palette_fallback: int = 5
 

@@ -162,7 +162,7 @@ def encode_color_palette(image: torch.Tensor, masks, cfg: CollageConfig):
     return palettes, locations
 
 
-def palette_downsample(image, mask=None, colors=4, spatial_weight=0.5):
+def palette_downsample(image, mask=None, colors=4, spatial_weight=0.5, min_area=0.01):
     """
     Downsample the image to a palette of colors.
     :param image: (3, H, W), RGB float32, range 0-1
@@ -189,6 +189,9 @@ def palette_downsample(image, mask=None, colors=4, spatial_weight=0.5):
         pixels = image_flat[mask_flat.bool()]  # (N, 3)
     else:
         pixels = image_flat
+        
+    if len(pixels) < min_area * h * w:
+        return torch.zeros_like(image)
 
     idx, centers = kmeans(pixels, cluster_num=colors)
     pixels = centers[idx]
