@@ -28,12 +28,6 @@ class DConcatAdapter(PeftLoraAdapter):
         if value == "all-linear":
             return value
         if isinstance(value, list):
-            # If x_embedder is not present, add it to the list and warn the user
-            if "x_embedder" not in value:
-                logger.warning(
-                    "x_embedder is not present in lora_layers. Adding it to the list."
-                )
-                value.append("x_embedder")
             return value
         raise ValueError(
             "lora_layers must be either 'all-linear' or a list of strings."
@@ -59,6 +53,10 @@ class DConcatAdapter(PeftLoraAdapter):
             transformer.x_embedder = new_linear
 
         super().install_modules(transformer)
+        
+        # If x_embedder is not covered by LoRA, train full x_embedder
+        if not hasattr(transformer.x_embedder, "lora_A"):
+            transformer.x_embedder.requires_grad_(True)
 
     def predict_velocity(
         self,

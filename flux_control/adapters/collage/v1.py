@@ -8,8 +8,8 @@ from diffusers.models.transformers.transformer_flux import FluxTransformer2DMode
 import einops
 import random
 
-from ..utils.common import meshgrid_to_ij
-from .d_concat import DConcatAdapter
+from ...utils.common import meshgrid_to_ij
+from ..d_concat import DConcatAdapter
 
 logger = logging.Logger(__name__)
 
@@ -101,28 +101,6 @@ class CollageAdapter(DConcatAdapter):
 
         super().install_modules(transformer)
         transformer.context_embedder.color_embedder.requires_grad_(True)
-
-    def save_model(self, transformer: FluxTransformer2DModel) -> dict:
-        layers_to_save = super().save_model(transformer)
-        for name, param in transformer.named_parameters():
-            if "color_embedder" in name:
-                layers_to_save[name] = param
-        return layers_to_save
-
-    def load_model(self, transformer: FluxTransformer2DModel, state_dict: dict):
-        super().load_model(transformer, state_dict)
-        color_dict = {
-            k.replace("transformer.", ""): v
-            for k, v in state_dict.items()
-            if "color_embedder" in k
-        }
-        if len(color_dict) > 0:
-            transformer.load_state_dict(color_dict)
-        else:
-            logger.warning(
-                "No color embedder state dict found in the checkpoint. "
-                "This may be due to a mismatch in the model architecture."
-            )
 
     def predict_velocity(
         self,

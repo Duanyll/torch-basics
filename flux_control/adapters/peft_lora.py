@@ -1,3 +1,4 @@
+from re import L
 from typing import Literal
 import logging
 import torch
@@ -11,7 +12,7 @@ from .base import BaseAdapter
 
 logger = logging.getLogger(__name__)
 NORM_LAYER_PREFIXES = ["norm_q", "norm_k", "norm_added_q", "norm_added_k"]
-    
+
 
 class PeftLoraAdapter(BaseAdapter):
     """
@@ -63,49 +64,32 @@ class PeftLoraAdapter(BaseAdapter):
         transformer.add_adapter(transformer_lora_config)
 
     def save_model(self, transformer: FluxTransformer2DModel) -> dict:
-        transformer_lora_layers_to_save = get_peft_model_state_dict(transformer)
-        if self.train_norm_layers:
-            transformer_norm_layers_to_save = {
-                name: param
-                for name, param in transformer.named_parameters()
-                if any(k in name for k in NORM_LAYER_PREFIXES)
-            }
-            transformer_lora_layers_to_save = {
-                **transformer_lora_layers_to_save,
-                **transformer_norm_layers_to_save,
-            }
+        layers_to_save = get_peft_model_state_dict(transformer)
+        for name, param in transformer.named_parameters():
+            if not "lora" in name and param.requires_grad:
+                layers_to_save[name] = param.data
 
-        return transformer_lora_layers_to_save
+        return layers_to_save
 
     def load_model(self, transformer: FluxTransformer2DModel, state_dict: dict):
-        transformer_lora_state_dict = {
-            f'{k.replace("transformer.", "")}': v
-            for k, v in state_dict.items()
-            if k.startswith("transformer.") and "lora" in k
-        }
+        lora_state_dict = {}
+        other_state_dict = {}
+        for k, v in state_dict.items():
+            if k.startswith("transformer."):
+                k_trim = k.replace("transformer.", "")
+                if "lora" in k_trim:
+                    lora_state_dict[k_trim] = v
+                else:
+                    other_state_dict[k] = v
         incompatible_keys = set_peft_model_state_dict(
-            transformer, transformer_lora_state_dict, adapter_name="default"
+            transformer, lora_state_dict, adapter_name="default"
         )
-        if incompatible_keys is not None:
-            # check only for unexpected keys
-            unexpected_keys = getattr(incompatible_keys, "unexpected_keys", None)
-            if unexpected_keys:
-                logger.warning(
-                    f"Loading adapter weights from state_dict led to unexpected keys not found in the model: "
-                    f" {unexpected_keys}. "
-                )
-
-        if self.train_norm_layers:
-            transformer_norm_state_dict = {
-                k: v
-                for k, v in state_dict.items()
-                if k.startswith("transformer.")
-                and any(norm_k in k for norm_k in NORM_LAYER_PREFIXES)
-            }
-            transformer._transformer_norm_layers = (  # type: ignore
-                FluxControlPipeline._load_norm_into_transformer(
-                    transformer_norm_state_dict,
-                    transformer=transformer,
-                    discard_original_layers=False,
-                )
+        if incompatible_keys:
+            logger.warning(
+                f"Some keys in the state_dict are incompatible with the model: {incompatible_keys}"
+            )
+        incompatible_keys = transformer.load_state_dict(other_state_dict, strict=False)
+        if incompatible_keys:
+            logger.warning(
+                f"Some keys in the state_dict are incompatible with the model: {incompatible_keys}"
             )

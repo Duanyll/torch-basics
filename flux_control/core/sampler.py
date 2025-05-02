@@ -20,7 +20,7 @@ class FluxSampler(BaseModel):
     height: int = 1024
     width: int = 1024
     infer_size_from: str | None = None
-    infer_latent_size_from: str | None = None
+    infer_size_ratio: int = 1
     seed: int = 0
 
     _pipe: FluxPipeline
@@ -56,12 +56,9 @@ class FluxSampler(BaseModel):
     ) -> Image.Image:
         if not "noisy_latents" in batch:
             if self.infer_size_from is not None:
-                _, _, height, width = batch[self.infer_size_from].shape
-                height = height 
-            elif self.infer_latent_size_from is not None:
-                _, _, height, width = batch[self.infer_latent_size_from].shape
-                height = height * 8
-                width = width * 8
+                height, width = batch[self.infer_size_from].shape[-2:]
+                height = height * self.infer_size_ratio
+                width = width * self.infer_size_ratio
             else:
                 height = self.height
                 width = self.width

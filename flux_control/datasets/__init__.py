@@ -1,7 +1,7 @@
 from torch.utils.data import Dataset, ConcatDataset
 from datasets import load_dataset
 
-from .mock import MockDataset, MockCollageDataset
+from .mock import MockDataset, MockCollageDataset, MockCollageDatasetV2
 from .lmdb import LMDBDataset
 
 
@@ -24,6 +24,8 @@ def parse_dataset(dataset_config) -> Dataset:
         return MockDataset(**dataset_config)
     elif dataset_type == "mock_collage":
         return MockCollageDataset(**dataset_config)
+    elif dataset_type == "mock_collage_v2":
+        return MockCollageDatasetV2(**dataset_config)
     elif dataset_type == "lmdb":
         return LMDBDataset(**dataset_config)
     elif dataset_type == "multi":

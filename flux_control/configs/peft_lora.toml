@@ -1,6 +1,6 @@
-output_dir = "./runs/peft_lora_285058"
+output_dir = "./runs/peft_lora_285058_2"
 logging_dir = "./runs"
-experiment_name = "peft_lora_285058"
+experiment_name = "peft_lora_285058_2"
 checkpointing_steps = 200
 sample_steps = 200
 sample_batch_pickle = "data/285058_sample.pt"
@@ -16,7 +16,7 @@ use_8bit_adam = false
 seed = 42
 gradient_accumulation_steps = 4
 train_steps = 2000
-learning_rate = 4e-4
+learning_rate = 5e-6
 lr_scheduler = "constant"
 weighting_scheme = "logit_normal"
 

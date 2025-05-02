@@ -4,7 +4,7 @@ import pickle
 
 
 class LMDBDataset(Dataset):
-    def __init__(self, path: str, db_name: str | None = None):
+    def __init__(self, path: str, db_name: str | None = None, max_items: int = 0):
         self.lmdb_path = path
         self.env = lmdb.open(
             path, readonly=True, lock=False, readahead=False, meminit=False, max_dbs=16
@@ -12,6 +12,8 @@ class LMDBDataset(Dataset):
         self.db_name = db_name
         self.db = self.env.open_db(db_name.encode()) if db_name else self.env.open_db()
         self.keys = self._load_keys()
+        if len(self.keys) > max_items > 0:
+            self.keys = self.keys[:max_items]
 
     def _load_keys(self):
         with self.env.begin() as txn:

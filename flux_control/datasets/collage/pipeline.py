@@ -99,8 +99,6 @@ def process_image_sample(
         src = crop_and_resize_image(src, size)
     if hint is not None:
         hint = crop_and_resize_image(hint, size)
-    else:
-        hint = torch.zeros_like(coarse)
     if confidence is not None:
         conf_h, conf_w = h // 16, w // 16
         if conf_h != confidence.shape[1] or conf_w != confidence.shape[2]:
@@ -133,13 +131,14 @@ def process_image_sample(
         "coarse": save_image(coarse),
         "mask_coarse": save_mask(mask_coarse),
         "foreground": save_mask(foreground),
-        "hint": save_image(hint),
         "confidence": confidence.to(torch.bfloat16).cpu(),
         "prompt_embeds": prompt_embeds.cpu(),
         "pooled_prompt_embeds": pooled_prompt_embeds.cpu(),
     }
     if src is not None:
         save_data["src"] = save_image(src)
+    if hint is not None:
+        save_data["hint"] = save_image(hint)
 
     return save_data
 

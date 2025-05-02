@@ -35,7 +35,7 @@ from diffusers.optimization import get_scheduler
 
 from ..adapters import BaseAdapter, parse_adapter_config
 from ..datasets import parse_dataset
-from ..utils.common import flatten_dict
+from ..utils.common import flatten_dict, unpack_bool_tensor
 from ..utils.upcasting import (
     apply_layerwise_upcasting,
     cast_trainable_parameters,
@@ -498,19 +498,19 @@ class FluxFinetuner(BaseModel):
         return self._resume_checkpoint_step
 
     def _train_step(self, transformer, batch) -> torch.Tensor:
-        batch_size = batch["clean_latents"].shape[0]
+        batch_size = batch["prompt_embeds"].shape[0]
         timesteps = compute_density_for_timestep_sampling(
             weighting_scheme=self.weighting_scheme,
             batch_size=batch_size,
             logit_mean=self.logit_mean,
             logit_std=self.logit_std,
             mode_scale=self.mode_scale,
-        ).to(device=batch["clean_latents"].device, dtype=self._weight_dtype)
+        ).to(device=batch["prompt_embeds"].device, dtype=self._weight_dtype)
         if self._unwrap_model(transformer).config.guidance_embeds:
             guidance = torch.full(
                 (batch_size,),
                 self.guidance_scale,
-                device=batch["clean_latents"].device,
+                device=batch["prompt_embeds"].device,
                 dtype=self._weight_dtype,
             )
         else:
@@ -518,7 +518,7 @@ class FluxFinetuner(BaseModel):
         loss = self.adapter.train_step(transformer, batch, timesteps, guidance)
         weighting = compute_loss_weighting_for_sd3(
             weighting_scheme=self.weighting_scheme, sigmas=timesteps
-        ).to(device=batch["clean_latents"].device, dtype=torch.float32)
+        ).to(device=batch["prompt_embeds"].device, dtype=torch.float32)
         loss = (loss * weighting).mean()
         return loss
 
@@ -572,6 +572,8 @@ class FluxFinetuner(BaseModel):
     def _move_batch_to_device(self, batch, insert_batch_dim=True):
         new_batch = {}
         for k, v in batch.items():
+            if isinstance(v, tuple):
+                v = unpack_bool_tensor(*v)
             if isinstance(v, torch.Tensor):
                 if insert_batch_dim:
                     v = v.unsqueeze(0)
