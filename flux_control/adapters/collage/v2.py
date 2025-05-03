@@ -49,9 +49,9 @@ class CollageAdapterV2(DConcatAdapter):
         apply_patches(transformer)
         super().install_modules(transformer)
 
-        time_text_embed_state_dict = transformer.time_text_embed.state_dict()
-        if not any("lora" in k for k in time_text_embed_state_dict.keys()):
-            transformer.time_text_embed.requires_grad_(True)
+        lge_state_dict = transformer.time_text_embed.local_guidance_embedder.state_dict()
+        if not any("lora" in k for k in lge_state_dict.keys()):
+            transformer.time_text_embed.local_guidance_embedder.requires_grad_(True)
 
     def predict_velocity(
         self,
@@ -93,7 +93,7 @@ class CollageAdapterV2(DConcatAdapter):
             batch["img_ids"] = self._make_img_ids(batch["noisy_latents"])
 
         if "confidence" in batch:
-            confidence = self._pack_confidence(batch["confidence"])
+            confidence = self._pack_confidence(batch["confidence"]) * 1000
             pooled_prompt_embeds = (batch["pooled_prompt_embeds"], confidence)
         else:
             pooled_prompt_embeds = batch["pooled_prompt_embeds"]

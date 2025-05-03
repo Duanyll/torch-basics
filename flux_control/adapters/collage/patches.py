@@ -192,8 +192,6 @@ def apply_patches(transformer):
     """
     Apply patches to the FluxTransformer2DModel class.
     """
-    logging.info("Applying patches to FluxTransformer2DModel...")
-
     patch_time_text_embed_init(transformer.time_text_embed)
     transformer.time_text_embed.forward = types.MethodType(
         patch_time_text_embed_forward, transformer.time_text_embed

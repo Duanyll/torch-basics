@@ -124,7 +124,6 @@ def main():
         "--device",
         type=str,
         default="cuda",
-        choices=["cuda", "cpu"],
         help="Device to process tensors",
     )
 

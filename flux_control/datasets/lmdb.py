@@ -1,10 +1,17 @@
 import lmdb
 from torch.utils.data import Dataset
 import pickle
+from ..utils.common import unpack_bool_tensor
 
 
 class LMDBDataset(Dataset):
-    def __init__(self, path: str, db_name: str | None = None, max_items: int = 0):
+    def __init__(
+        self,
+        path: str,
+        db_name: str | None = None,
+        max_items: int = 0,
+        unpack_bool=True,
+    ):
         self.lmdb_path = path
         self.env = lmdb.open(
             path, readonly=True, lock=False, readahead=False, meminit=False, max_dbs=16
@@ -14,6 +21,7 @@ class LMDBDataset(Dataset):
         self.keys = self._load_keys()
         if len(self.keys) > max_items > 0:
             self.keys = self.keys[:max_items]
+        self.unpack_bool = unpack_bool
 
     def _load_keys(self):
         with self.env.begin() as txn:
@@ -31,6 +39,12 @@ class LMDBDataset(Dataset):
             if value is None:
                 raise KeyError(f"Key {key} not found in LMDB.")
             sample = pickle.loads(value)
+
+        if self.unpack_bool:
+            sample = {
+                k: unpack_bool_tensor(*v) if isinstance(v, tuple) and len(v) == 2 else v
+                for k, v in sample.items()
+            }
         return sample
 
     def __del__(self):
