@@ -49,6 +49,14 @@ class CollageAdapterV2(DConcatAdapter):
     chance_drop_hint: float = 0.2
     chance_use_affine: float = 0.5
 
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.input_dimension = 384
+        if self.use_foreground:
+            self.input_dimension += 256
+        if self.use_hint:
+            self.input_dimension += 64
+
     def install_modules(self, transformer: FluxTransformer2DModel):
         apply_patches(
             transformer,
@@ -58,7 +66,7 @@ class CollageAdapterV2(DConcatAdapter):
         super().install_modules(transformer)
 
         lge_state_dict = (
-            transformer.time_text_embed.local_guidance_embedder.state_dict()
+            transformer.time_text_embed.local_guidance_embedder.state_dict()  # type: ignore
         )
         if not any("lora" in k for k in lge_state_dict.keys()):
             transformer.time_text_embed.local_guidance_embedder.requires_grad_(True)

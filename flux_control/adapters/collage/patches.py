@@ -163,8 +163,8 @@ def patch_ada_layer_norm_single_forward(
         has_local_emb = True
         emb, local_emb = emb
         image_len = local_emb.shape[1]
-        x_img = x[:, image_len:]
-        x = x[:, :image_len]
+        x_img = x[:, -image_len:]
+        x = x[:, :-image_len]
     else:
         has_local_emb = False
 
@@ -209,8 +209,8 @@ def patch_single_transformer_block_forward(
     if isinstance(gate, tuple):
         gate, local_gate = gate
         image_len = local_gate.shape[1]
-        x_txt = proj_out[:, :image_len]
-        x_img = proj_out[:, image_len:]
+        x_txt = proj_out[:, :-image_len]
+        x_img = proj_out[:, -image_len:]
         x_txt = gate[:, None, :] * x_txt
         x_img = local_gate * x_img
         hidden_states = torch.cat([x_txt, x_img], dim=1)
