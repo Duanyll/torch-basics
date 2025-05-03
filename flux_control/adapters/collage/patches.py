@@ -152,12 +152,37 @@ def patch_transformer_block_forward(
     return encoder_hidden_states, hidden_states
 
 
+def patch_ada_layer_norm_single_forward(
+    self,
+    x,
+    emb,
+):
+    if isinstance(emb, tuple):
+        has_local_emb = True
+        emb, local_emb = emb
+        image_len = local_emb.shape[1]
+        x_img = x[:, image_len:]
+        x = x[:, :image_len]
+    else:
+        has_local_emb = False
+
+    emb = self.linear(self.silu(emb))
+    shift_msa, scale_msa, gate_msa = emb.chunk(3, dim=1)
+    x = self.norm(x) * (1 + scale_msa[:, None]) + shift_msa[:, None]
+
+    if has_local_emb:
+        local_emb = self.linear(self.silu(local_emb))
+        local_shift_msa, local_scale_msa, local_gate_msa = local_emb.chunk(3, dim=-1)
+        x_img = self.norm(x_img) * (1 + local_scale_msa) + local_shift_msa
+        x = torch.cat([x, x_img], dim=1)
+        return x, (gate_msa, local_gate_msa)
+    else:
+        return x, gate_msa
+
+
 def patch_single_transformer_block_forward(
     self, hidden_states, temb, image_rotary_emb=None, joint_attention_kwargs=None
 ):
-    if isinstance(temb, tuple):
-        temb, local_temb = temb
-
     residual = hidden_states
     norm_hidden_states, gate = self.norm(hidden_states, emb=temb)
     mlp_hidden_states = self.act_mlp(self.proj_mlp(norm_hidden_states))
@@ -169,8 +194,19 @@ def patch_single_transformer_block_forward(
     )
 
     hidden_states = torch.cat([attn_output, mlp_hidden_states], dim=2)
-    gate = gate.unsqueeze(1)
-    hidden_states = gate * self.proj_out(hidden_states)
+    proj_out = self.proj_out(hidden_states)
+
+    if isinstance(gate, tuple):
+        gate, local_gate = gate
+        image_len = local_gate.shape[1]
+        x_txt = proj_out[:, :image_len]
+        x_img = proj_out[:, image_len:]
+        x_txt = gate[:, None, :] * x_txt
+        x_img = local_gate * x_img
+        hidden_states = torch.cat([x_txt, x_img], dim=1)
+    else:
+        hidden_states = gate[:, None, :] * proj_out
+
     hidden_states = residual + hidden_states
     if hidden_states.dtype == torch.float16:
         hidden_states = hidden_states.clip(-65504, 65504)
@@ -205,6 +241,9 @@ def apply_patches(transformer):
         )
         block.forward = types.MethodType(patch_transformer_block_forward, block)
     for block in transformer.single_transformer_blocks:
+        block.norm.forward = types.MethodType(
+            patch_ada_layer_norm_single_forward, block.norm
+        )
         block.forward = types.MethodType(patch_single_transformer_block_forward, block)
     transformer.norm_out.forward = types.MethodType(
         patch_norm_out_forward, transformer.norm_out

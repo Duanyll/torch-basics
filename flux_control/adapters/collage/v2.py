@@ -42,6 +42,8 @@ class CollageAdapterV2(DConcatAdapter):
     gaussian_init_lora: bool = False
     use_lora_bias: bool = True
 
+    use_foreground: bool = True
+    use_hint: bool = True
     chance_drop_hint: float = 0.2
     chance_use_affine: float = 0.5
 
@@ -64,7 +66,7 @@ class CollageAdapterV2(DConcatAdapter):
         b, c, h, w = batch["noisy_latents"].shape
         h_len = h // self.patch_size
         w_len = w // self.patch_size
-        
+
         if "coarse" not in batch:
             if "splat" in batch:
                 batch["coarse"] = batch["splat"]
@@ -72,20 +74,20 @@ class CollageAdapterV2(DConcatAdapter):
             else:
                 batch["coarse"] = batch["affine"]
                 batch["mask_coarse"] = batch["mask_affine"]
-                
+
         if "hint" not in batch:
             batch["hint"] = torch.zeros_like(batch["noisy_latents"])
 
-        input_latents, _ = einops.pack(
-            (
-                self._pack_latents(batch["noisy_latents"]),
-                self._pack_latents(batch["coarse"]),
-                self._pack_latents(1 - self._pack_mask(batch["mask_coarse"])),
-                self._pack_latents(self._pack_mask(batch["foreground"])),
-                self._pack_latents(batch["hint"]),
-            ),
-            "b n *",
-        )
+        inputs = [
+            self._pack_latents(batch["noisy_latents"]),
+            self._pack_latents(batch["coarse"]),
+            self._pack_latents(1 - self._pack_mask(batch["mask_coarse"])),
+        ]
+        if self.use_foreground:
+            inputs.append(self._pack_latents(self._pack_mask(batch["foreground"])))
+        if self.use_hint:
+            inputs.append(self._pack_latents(batch["hint"]))
+        input_latents, _ = einops.pack(inputs, "b n *")
 
         if not "txt_ids" in batch:
             batch["txt_ids"] = self._make_txt_ids(batch["prompt_embeds"])
@@ -127,10 +129,10 @@ class CollageAdapterV2(DConcatAdapter):
             batch["mask_coarse"] = (
                 batch["mask_affine"] if use_affine else batch["mask_splat"]
             )
-            
+
         if random.random() < self.chance_drop_hint:
             batch["hint"] = torch.zeros_like(batch["hint"])
-            
+
         if not "clean_latents" in batch:
             batch["clean_latents"] = batch["tgt"]
 
