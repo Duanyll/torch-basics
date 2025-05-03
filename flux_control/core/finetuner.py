@@ -33,15 +33,10 @@ from diffusers.training_utils import (
 from diffusers.utils.torch_utils import is_compiled_module
 from diffusers.optimization import get_scheduler
 
-from ..adapters import BaseAdapter, parse_adapter_config
+from ..utils.upcasting import cast_trainable_parameters
 from ..datasets import parse_dataset
 from ..utils.common import flatten_dict, unpack_bool_tensor
-from ..utils.upcasting import (
-    apply_layerwise_upcasting,
-    cast_trainable_parameters,
-    LayerwiseUpcastingGranularity,
-)
-from .sampler import FluxSampler
+from .inference import FluxInference
 
 
 logger = get_logger(__name__)
@@ -73,9 +68,7 @@ class FluxFinetunerProgress(Progress):
             yield self.make_tasks_table([task])
 
 
-class FluxFinetuner(BaseModel):
-    adapter: Annotated[BaseAdapter, PlainValidator(parse_adapter_config)]
-    sampler: FluxSampler
+class FluxFinetuner(FluxInference):
     dataset: dict[str, Any]
     dataloader_num_workers: int = 0
 
@@ -83,7 +76,6 @@ class FluxFinetuner(BaseModel):
     output_dir: str
     logging_dir: str = "./runs"
     experiment_name: str | None = None
-    pretrained_model_id: str = "black-forest-labs/FLUX.1-dev"
     resume_from_checkpoint: str | None = None
     checkpointing_steps: int = 500
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
@@ -172,23 +164,6 @@ class FluxFinetuner(BaseModel):
     
     Note that "fp16" is not supported since Flux.1 Dev is native bf16.
     """
-    base_precision: Literal["fp32", "bf16", "fp8-upcast"] = "fp8-upcast"
-    """
-    Precision for the base transformer model.
-    
-    1. "fp32": Use fp32 precision, cost ~48GB VRAM for weights. This is not very useful since 
-    the model is already in bf16.
-    2. "bf16": Use bf16 precision, cost ~23GB VRAM. Not feasible for 24GB GPUs.
-    3. "fp8-upcast": Store weights in fp8 and compute in bf16, cost ~11GB VRAM. Also speeds up
-    the training.
-    
-    Currently quantization (store & compute in fp8) is not supported.
-    """
-    trainable_precision: Literal["fp32", "bf16"] = "bf16"
-    """
-    Precision for the trainable parameters. can be "fp32" or "bf16".
-    """
-    allow_tf32: bool = False
     gradient_checkpointing: bool = True
     """
     Effectively reduces the memory usage for saving activations (use ~3GB for bf16). Double the
@@ -198,8 +173,6 @@ class FluxFinetuner(BaseModel):
     """
     Store the momentum and variance of Adam in 8-bit. Requires bitsandbytes package.
     """
-    _weight_dtype: torch.dtype = torch.bfloat16
-    _trainable_dtype: torch.dtype = torch.bfloat16
 
     @model_validator(mode="after")
     def _check_precision(self):
@@ -270,13 +243,6 @@ class FluxFinetuner(BaseModel):
         self._accelerator = self._make_accelerator()
         self._initialize_logging(kwargs)
 
-        self._weight_dtype = (
-            torch.float32 if self.base_precision == "fp32" else torch.bfloat16
-        )
-        self._trainable_dtype = (
-            torch.float32 if self.trainable_precision == "fp32" else torch.bfloat16
-        )
-
     def _make_accelerator(self) -> Accelerator:
         return Accelerator(
             mixed_precision="no",
@@ -329,23 +295,6 @@ class FluxFinetuner(BaseModel):
         if self._accelerator.is_main_process:
             logger.debug(message)
 
-    def _make_transformer(self) -> FluxTransformer2DModel:
-        transformer = cast(
-            FluxTransformer2DModel,
-            FluxTransformer2DModel.from_pretrained(
-                self.pretrained_model_id,
-                subfolder="transformer",
-                torch_dtype=self._weight_dtype,
-            ),
-        )
-        transformer.requires_grad_(False)
-        self.adapter.install_modules(transformer)
-        cast_trainable_parameters(transformer, self._trainable_dtype)
-        self._info(
-            f"Transformer model created with {self.pretrained_model_id} and {self.adapter.__class__.__name__}"
-        )
-        return transformer
-
     def _unwrap_model(self, model):
         model = self._accelerator.unwrap_model(model)
         model = model._orig_mod if is_compiled_module(model) else model
@@ -381,28 +330,14 @@ class FluxFinetuner(BaseModel):
             # Remove the model from input list to avoid default loading behavior
             model = models.pop()
 
-        lora_state_dict = cast(dict, FluxControlPipeline.lora_state_dict(input_dir))
-        self.adapter.load_model(model, lora_state_dict)
-        cast_trainable_parameters(model, self._trainable_dtype)
-        self._info(f"Loaded model from {input_dir}")
+        self._load_weights(model, input_dir)
 
     def _optimize_model(self, transformer):
-        if self.base_precision == "fp8-upcast":
-            apply_layerwise_upcasting(
-                transformer,
-                storage_dtype=torch.float8_e4m3fn,
-                compute_dtype=self._weight_dtype,
-                granularity=LayerwiseUpcastingGranularity.PYTORCH_LAYER,
-            )
-            self._info(f"Applied layerwise upcasting.")
+        super()._optimize_model(transformer)
 
         if self.gradient_checkpointing:
             transformer.enable_gradient_checkpointing()
             self._info(f"Gradient checkpointing enabled.")
-
-        if self.allow_tf32:
-            torch.backends.cuda.matmul.allow_tf32 = True
-            self._info(f"TF32 enabled.")
 
     def _make_optimizer(self, transformer) -> torch.optim.Optimizer:
         learn_rate = (
@@ -569,21 +504,6 @@ class FluxFinetuner(BaseModel):
         self._info(f"Base layer dtype: {lora_layer.base_layer.weight.dtype}")
         self._info(f"LoRA layer dtype: {lora_layer.lora_A.default.weight.dtype}")
 
-    def _move_batch_to_device(self, batch, insert_batch_dim=True):
-        new_batch = {}
-        for k, v in batch.items():
-            if isinstance(v, tuple):
-                v = unpack_bool_tensor(*v)
-            if isinstance(v, torch.Tensor):
-                if insert_batch_dim:
-                    v = v.unsqueeze(0)
-                new_batch[k] = v.to(
-                    device=self._accelerator.device, dtype=self._weight_dtype
-                )
-            else:
-                new_batch[k] = v
-        return new_batch
-
     def _sample_and_log(self, transformer, global_step, progress):
         if self._sample_batch is None:
             return
@@ -592,7 +512,7 @@ class FluxFinetuner(BaseModel):
                 image = self.sampler.sample(
                     transformer,
                     self.adapter,
-                    self._move_batch_to_device(batch),
+                    self._move_batch_to_device(batch, self._accelerator.device),
                     progress=progress,
                 )
                 self._accelerator.log(
@@ -612,6 +532,10 @@ class FluxFinetuner(BaseModel):
 
     def train(self):
         set_seed(self.seed)
+        
+        if self._transformer is not None:
+            del self._transformer
+            self._transformer = None
 
         transformer = self._make_transformer()
         self._accelerator.register_load_state_pre_hook(self._load_model_hook)
@@ -703,3 +627,4 @@ class FluxFinetuner(BaseModel):
         self._final_save(transformer)
         self._info("Training finished")
         self._accelerator.end_training()
+        self._transformer = transformer

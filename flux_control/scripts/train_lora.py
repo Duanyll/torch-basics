@@ -5,7 +5,7 @@ import json
 from typing import Optional
 from rich.console import Console
 
-from ..core.flux_finetuner import FluxFinetuner
+from ..core.finetuner import FluxFinetuner
 from ..utils.common import deep_merge_dicts
 
 
