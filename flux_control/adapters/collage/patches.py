@@ -1,4 +1,4 @@
-import logging
+from functools import partial
 import types
 from typing import Literal, Tuple
 from einops import rearrange
@@ -6,7 +6,6 @@ import torch
 import torch.nn as nn
 from diffusers.models.transformers.transformer_flux import FluxTransformer2DModel
 from diffusers.models.embeddings import TimestepEmbedding
-import random
 
 
 def patch_time_text_embed_init(module):
@@ -85,7 +84,10 @@ def patch_transformer_block_forward(
     temb,
     image_rotary_emb=None,
     joint_attention_kwargs=None,
+    use_lge=True,
 ):
+    if not use_lge and isinstance(temb, tuple):
+        temb = temb[0]
     if isinstance(temb, tuple):
         temb, local_temb = temb
         norm_hidden_states, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.norm1(
@@ -181,8 +183,16 @@ def patch_ada_layer_norm_single_forward(
 
 
 def patch_single_transformer_block_forward(
-    self, hidden_states, temb, image_rotary_emb=None, joint_attention_kwargs=None
+    self,
+    hidden_states,
+    temb,
+    image_rotary_emb=None,
+    joint_attention_kwargs=None,
+    use_lge=True,
 ):
+    if not use_lge and isinstance(temb, tuple):
+        temb = temb[0]
+
     residual = hidden_states
     norm_hidden_states, gate = self.norm(hidden_states, emb=temb)
     mlp_hidden_states = self.act_mlp(self.proj_mlp(norm_hidden_states))
@@ -224,7 +234,11 @@ def patch_norm_out_forward(self, x, conditioning_embedding) -> torch.Tensor:
     return x
 
 
-def apply_patches(transformer):
+def apply_patches(
+    transformer,
+    double_layers: bool | list[int] = True,
+    single_layers: bool | list[int] = False,
+):
     """
     Apply patches to the FluxTransformer2DModel class.
     """
@@ -232,19 +246,34 @@ def apply_patches(transformer):
     transformer.time_text_embed.forward = types.MethodType(
         patch_time_text_embed_forward, transformer.time_text_embed
     )
-    for block in transformer.transformer_blocks:
+
+    def use_lge(spec, i):
+        if isinstance(spec, bool):
+            return spec
+        return i in spec
+
+    for i, block in enumerate(transformer.transformer_blocks):
         block.norm1.forward = types.MethodType(
             patch_ada_layer_norm_forward, block.norm1
         )
         block.norm1_context.forward = types.MethodType(
             patch_ada_layer_norm_forward, block.norm1_context
         )
-        block.forward = types.MethodType(patch_transformer_block_forward, block)
-    for block in transformer.single_transformer_blocks:
+        block.forward = types.MethodType(
+            partial(patch_transformer_block_forward, use_lge=use_lge(double_layers, i)),
+            block,
+        )
+    for i, block in enumerate(transformer.single_transformer_blocks):
         block.norm.forward = types.MethodType(
             patch_ada_layer_norm_single_forward, block.norm
         )
-        block.forward = types.MethodType(patch_single_transformer_block_forward, block)
+        block.forward = types.MethodType(
+            partial(
+                patch_single_transformer_block_forward,
+                use_lge=use_lge(single_layers, i),
+            ),
+            block,
+        )
     transformer.norm_out.forward = types.MethodType(
         patch_norm_out_forward, transformer.norm_out
     )

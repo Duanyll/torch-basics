@@ -41,6 +41,8 @@ class CollageAdapterV2(DConcatAdapter):
     rank: PositiveInt = 128
     gaussian_init_lora: bool = False
     use_lora_bias: bool = True
+    lge_double_layers: bool | list[int] = True
+    lge_single_layers: bool | list[int] = False
 
     use_foreground: bool = True
     use_hint: bool = True
@@ -48,10 +50,16 @@ class CollageAdapterV2(DConcatAdapter):
     chance_use_affine: float = 0.5
 
     def install_modules(self, transformer: FluxTransformer2DModel):
-        apply_patches(transformer)
+        apply_patches(
+            transformer,
+            double_layers=self.lge_double_layers,
+            single_layers=self.lge_single_layers,
+        )
         super().install_modules(transformer)
 
-        lge_state_dict = transformer.time_text_embed.local_guidance_embedder.state_dict()
+        lge_state_dict = (
+            transformer.time_text_embed.local_guidance_embedder.state_dict()
+        )
         if not any("lora" in k for k in lge_state_dict.keys()):
             transformer.time_text_embed.local_guidance_embedder.requires_grad_(True)
 
