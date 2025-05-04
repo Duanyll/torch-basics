@@ -33,9 +33,9 @@ from diffusers.training_utils import (
 from diffusers.utils.torch_utils import is_compiled_module
 from diffusers.optimization import get_scheduler
 
-from ..utils.upcasting import cast_trainable_parameters
 from ..datasets import parse_dataset
-from ..utils.common import flatten_dict, unpack_bool_tensor
+from ..utils.common import flatten_dict
+from ..utils.ema import EMA
 from .inference import FluxInference
 
 
@@ -232,10 +232,13 @@ class FluxFinetuner(FluxInference):
     logit_std: float = 1.0
     mode_scale: float = 1.29
     guidance_scale: float = 3.5
-
     max_grad_norm: float = 1.0
+    
+    use_ema: bool = True
+    ema_decay: float = 0.999
 
     _accelerator: Accelerator
+    _ema: EMA | None = None
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -283,6 +286,15 @@ class FluxFinetuner(FluxInference):
     def _debug(self, message: str):
         if self._accelerator.is_main_process:
             logger.debug(message)
+            
+    def _make_ema(self, transformer):
+        if self.use_ema and self._accelerator.is_main_process:
+            self._ema = EMA(
+                model=transformer,
+                decay=self.ema_decay,
+            )
+            self._ema.register()
+            self._info(f"EMA model created with decay {self.ema_decay}")
 
     def _unwrap_model(self, model):
         model = self._accelerator.unwrap_model(model)
@@ -307,8 +319,15 @@ class FluxFinetuner(FluxInference):
         FluxControlPipeline.save_lora_weights(
             output_dir, transformer_lora_layers=layers_to_save
         )
-
         self._info(f"Saved model to {output_dir}")
+        
+        if self._ema is not None:
+            ema_layers = self._ema.state_dict()
+            FluxControlPipeline.save_lora_weights(
+                os.path.join(output_dir, "ema.safetensors"), transformer_lora_layers=ema_layers
+            )
+            self._info(f"Saved EMA model to {output_dir}")
+
 
     def _load_model_hook(self, models, input_dir):
         if self._accelerator.distributed_type == DistributedType.DEEPSPEED:
@@ -320,6 +339,12 @@ class FluxFinetuner(FluxInference):
             model = models.pop()
 
         self._load_weights(model, input_dir)
+        
+        if self._ema is not None:
+            ema_state_dict = FluxControlPipeline.lora_state_dict(os.path.join(input_dir, "ema.safetensors"))
+            self._ema.load_state_dict(ema_state_dict)
+            self._ema.to(self._accelerator.device)
+            self._info(f"Loaded EMA model from {input_dir}")
 
     def _optimize_model(self, transformer):
         super()._optimize_model(transformer)
@@ -539,6 +564,7 @@ class FluxFinetuner(FluxInference):
         transformer, optimizer, dataloader, lr_scheduler = self._accelerator.prepare(
             transformer, optimizer, dataloader, lr_scheduler
         )
+        self._make_ema(transformer)
 
         global_step = self._try_resume_from_checkpoint()
         starting_epoch = global_step // len(dataloader)
@@ -584,6 +610,9 @@ class FluxFinetuner(FluxInference):
                     optimizer.step()
                     lr_scheduler.step()
                     optimizer.zero_grad()
+                    
+                    if self._accelerator.sync_gradients and self._ema is not None:
+                        self._ema.update()
 
                 global_step += 1
                 logs = {
@@ -596,7 +625,11 @@ class FluxFinetuner(FluxInference):
                     global_step % self.sample_steps == 0 or self.sample_steps == 1
                 ):
                     transformer.eval()
+                    if self._ema is not None:
+                        self._ema.apply_shadow()
                     self._sample_and_log(transformer, global_step, progress)
+                    if self._ema is not None:
+                        self._ema.restore()
                     self._info(f"Sampled at step {global_step}")
                     transformer.train()
 
