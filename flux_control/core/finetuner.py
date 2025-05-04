@@ -255,17 +255,6 @@ class FluxFinetuner(FluxInference):
         )
 
     def _initialize_logging(self, config: dict):
-        rich_handler = RichHandler()
-        transformers.utils.logging.disable_default_handler()
-        transformers.utils.logging.disable_progress_bar()
-        transformers.utils.logging.add_handler(rich_handler)
-        diffusers.utils.logging.disable_default_handler()
-        diffusers.utils.logging.add_handler(rich_handler)
-        diffusers.utils.logging.disable_progress_bar()
-        logging.basicConfig(
-            level=self.log_level,
-            handlers=[rich_handler],
-        )
         logger.info(self._accelerator.state, main_process_only=False)  # type: ignore
         if self._accelerator.is_local_main_process:
             transformers.utils.logging.set_verbosity_warning()

@@ -102,36 +102,43 @@ def safe_get(q, timeout=1):
 
 
 def get_processed_video_paths(lmdb_path):
-    # Enumerate both the result and skipped databases
-    video_paths = set()
+    """Get a set of basenames of already processed videos from LMDB."""
+    video_basenames = set()
     with lmdb.open(lmdb_path, max_dbs=16) as env:
         for db_name in [b"result", b"skipped"]:
             db = env.open_db(db_name)
             with env.begin(write=True) as txn:
                 cursor = txn.cursor(db)
                 for key in cursor.iternext(values=False):
-                    video_paths.add(key.decode())
-    return video_paths
+                    video_basenames.add(key.decode())
+    return video_basenames
 
-
-def get_video_paths(input_dir, max_samples, resume):
-    """Recursively scan input directory for mp4 files."""
-    logger.info(f"Scanning videos in {input_dir} with max_samples={max_samples}")
-    video_paths = set()
+def get_video_paths(input_dir, max_samples, resume, output_dir):
+    """Scan input_dir for .mp4 files, returning up to max_samples unprocessed files."""
+    logger.info(f"Scanning videos in {input_dir} to collect up to {max_samples} unprocessed samples")
+    
+    all_video_paths = []
     for root, _, files in os.walk(input_dir):
         for file in files:
             if file.endswith(".mp4"):
-                video_paths.add(os.path.join(root, file))
-            if len(video_paths) >= max_samples:
-                logger.debug(f"Found {len(video_paths)} videos, stopping scan")
-                return list(video_paths)
-    logger.info(f"Found {len(video_paths)} videos")
+                all_video_paths.append(os.path.join(root, file))
+    
+    logger.info(f"Found {len(all_video_paths)} total .mp4 files")
+
     if resume:
-        # If resuming, check if the LMDB already has processed videos
-        processed_video_paths = get_processed_video_paths(args.output_dir)
-        video_paths = video_paths - processed_video_paths
-        logger.info(f"Resuming: {len(processed_video_paths)} videos already processed")
-    return list(video_paths)
+        processed_basenames = get_processed_video_paths(output_dir)
+        unprocessed_paths = [p for p in all_video_paths if os.path.basename(p) not in processed_basenames]
+        logger.info(f"Resuming: {len(processed_basenames)} already processed, {len(unprocessed_paths)} unprocessed remaining")
+    else:
+        unprocessed_paths = all_video_paths
+
+    # Limit to max_samples new items
+    if max_samples > 0:
+        selected_paths = unprocessed_paths[:max_samples]
+    else:
+        selected_paths = unprocessed_paths
+    logger.info(f"Returning {len(selected_paths)} videos to process")
+    return selected_paths
 
 
 def load_caption_file(caption_file):
@@ -268,7 +275,7 @@ def main(args):
 
     # Load captions and videos
     caption_dict = load_caption_file(args.caption_file)
-    video_paths = get_video_paths(args.input_dir, args.max_samples, args.resume)
+    video_paths = get_video_paths(args.input_dir, args.max_samples, args.resume, args.output_dir)
     total_items = len(video_paths)
     logger.info(f"Total videos to process: {total_items}")
 
@@ -423,7 +430,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--max_samples",
         type=int,
-        default=float("inf"),
+        default=0,
         help="Max number of videos to process",
     )
     parser.add_argument(
