@@ -7,6 +7,11 @@ import numpy as np
 import matplotlib.pyplot as plt
 from einops import rearrange
 
+if __name__ == "__main__":
+    from ..utils.logging import setup_rich_logging
+
+    setup_rich_logging()
+
 from ..datasets.collage.hf import load_hf_pipeline, decode_latents
 from ..utils.describe import describe
 from ..utils.common import unpack_bool_tensor

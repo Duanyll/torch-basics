@@ -7,6 +7,10 @@ import pickle
 from typing import Optional
 from rich.console import Console
 
+if __name__ == "__main__":
+    from ..utils.logging import setup_rich_logging
+    setup_rich_logging()
+
 from ..core.inference import FluxInference
 from ..utils.common import deep_merge_dicts
 

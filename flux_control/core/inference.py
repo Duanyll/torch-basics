@@ -124,6 +124,7 @@ class FluxInference(BaseModel):
         self._transformer.to(device)
         self._transformer.eval()
         self._transformer_device = device
+        self.sampler.load_model(dtype=self._weight_dtype, device=device)
 
     def sample(self, batch: dict):
         with Progress(

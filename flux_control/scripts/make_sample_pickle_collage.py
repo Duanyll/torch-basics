@@ -9,11 +9,15 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from einops import rearrange
 
+if __name__ == "__main__":
+    from ..utils.logging import setup_rich_logging
+
+    setup_rich_logging()
+
 from ..utils.describe import describe
 from ..datasets.collage.hf import load_hf_pipeline
 from ..datasets.collage.pipeline import process_image_sample
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
