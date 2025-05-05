@@ -233,7 +233,7 @@ class FluxFinetuner(FluxInference):
     mode_scale: float = 1.29
     guidance_scale: float = 3.5
     max_grad_norm: float = 1.0
-    
+
     use_ema: bool = True
     ema_decay: float = 0.999
 
@@ -286,7 +286,7 @@ class FluxFinetuner(FluxInference):
     def _debug(self, message: str):
         if self._accelerator.is_main_process:
             logger.debug(message)
-            
+
     def _make_ema(self, transformer):
         if self.use_ema and self._accelerator.is_main_process:
             self._ema = EMA(
@@ -320,14 +320,13 @@ class FluxFinetuner(FluxInference):
             output_dir, transformer_lora_layers=layers_to_save
         )
         self._info(f"Saved model to {output_dir}")
-        
+
         if self._ema is not None:
             ema_layers = self._ema.state_dict()
             FluxControlPipeline.save_lora_weights(
                 os.path.join(output_dir, "ema"), transformer_lora_layers=ema_layers
             )
             self._info(f"Saved EMA model to {output_dir}")
-
 
     def _load_model_hook(self, models, input_dir):
         if self._accelerator.distributed_type == DistributedType.DEEPSPEED:
@@ -339,9 +338,11 @@ class FluxFinetuner(FluxInference):
             model = models.pop()
 
         self._load_weights(model, input_dir)
-        
+
         if self._ema is not None:
-            ema_state_dict = FluxControlPipeline.lora_state_dict(os.path.join(input_dir, "ema"))
+            ema_state_dict = FluxControlPipeline.lora_state_dict(
+                os.path.join(input_dir, "ema")
+            )
             self._ema.load_state_dict(ema_state_dict)
             self._ema.to(self._accelerator.device)
             self._info(f"Loaded EMA model from {input_dir}")
@@ -367,12 +368,12 @@ class FluxFinetuner(FluxInference):
 
         if self.use_8bit_adam:
             try:
-                from bitsandbytes.optim import Adam8bit
+                from bitsandbytes.optim import AdamW8bit
             except ImportError:
                 raise ImportError(
-                    "To use 8-bit Adam, please install the bitsandbytes package."
+                    "To use 8-bit AdamW, please install the bitsandbytes package."
                 )
-            optimizer_class = Adam8bit
+            optimizer_class = AdamW8bit
         else:
             optimizer_class = torch.optim.AdamW
 
@@ -546,7 +547,7 @@ class FluxFinetuner(FluxInference):
 
     def train(self):
         set_seed(self.seed)
-        
+
         if self._transformer is not None:
             del self._transformer
             self._transformer = None
@@ -610,7 +611,7 @@ class FluxFinetuner(FluxInference):
                     optimizer.step()
                     lr_scheduler.step()
                     optimizer.zero_grad()
-                    
+
                     if self._accelerator.sync_gradients and self._ema is not None:
                         self._ema.update()
 

@@ -15,7 +15,7 @@ class EMA():
     def register(self):
         for name, param in self.model.named_parameters():
             if param.requires_grad:
-                self.shadow[name] = param.detach().clone()
+                self.shadow[name] = param.detach().to(torch.float32)
 
     def update(self):
         if self.active:
@@ -24,19 +24,18 @@ class EMA():
             if param.requires_grad:
                 assert name in self.shadow
                 shadow = self.shadow[name]
-                shadow_dtype = shadow.dtype
                 param = param.detach().to(torch.float32)
-                shadow = shadow.detach().to(torch.float32)
                 new_average = (1.0 - self.decay) * param + self.decay * shadow
-                self.shadow[name] = new_average.to(shadow_dtype)
+                self.shadow[name] = new_average
 
     def apply_shadow(self):
         self.active = True
         for name, param in self.model.named_parameters():
             if param.requires_grad:
                 assert name in self.shadow
+                param_dtype = param.dtype
                 self.backup[name] = param.data
-                param.data = self.shadow[name]
+                param.data = self.shadow[name].to(param_dtype)
 
     def restore(self):
         self.active = False
