@@ -141,3 +141,14 @@ def crop_and_resize_image(image, target_size):
         image, size=(target_height, target_width), mode="bilinear", align_corners=False
     )
     return image.squeeze()  # Remove batch dimension
+
+def ensure_trainable(module):
+    """
+    Ensure that all parameters of the module are trainable.
+    """
+    # Check if LoRA is installed
+    for name, param in module.named_parameters():
+        if "lora" in name:
+            break
+    else:
+        module.requires_grad_(True)

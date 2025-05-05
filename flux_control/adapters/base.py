@@ -1,7 +1,7 @@
 from typing import Tuple
 
 import torch
-from diffusers.models.transformers.transformer_flux import FluxTransformer2DModel
+from diffusers import FluxTransformer2DModel, AutoencoderKL
 from pydantic import BaseModel, PositiveInt
 from einops import repeat, rearrange, reduce
 
@@ -102,6 +102,7 @@ class BaseAdapter(BaseModel):
     def train_step(
         self,
         transformer: FluxTransformer2DModel,
+        vae: AutoencoderKL,
         batch: dict,
         timestep: torch.Tensor,
         guidance: torch.Tensor | None,
@@ -114,6 +115,8 @@ class BaseAdapter(BaseModel):
         ----------
         transformer : FluxTransformer2DModel
             Adapted transformer model.
+        vae : AutoencoderKL
+            The VAE model used for encoding and decoding image.
         batch : dict
             Input batch containing the data.
 
@@ -143,12 +146,18 @@ class BaseAdapter(BaseModel):
         t_batch = rearrange(timestep, "b -> b 1 1 1")
         noisy_latents = (1.0 - t_batch) * clean + t_batch * noise
         batch["noisy_latents"] = noisy_latents
+        self.prepare_sample(transformer, vae, batch)
         model_pred = self.predict_velocity(transformer, batch, timestep, guidance)
         target = noise - clean
         loss = reduce(
             (model_pred.float() - target.float()) ** 2, "b c h w -> b", reduction="mean"
-        ) # Must use float() here
+        )  # Must use float() here
         return loss
+
+    def prepare_sample(
+        self, transformer: FluxTransformer2DModel, vae: AutoencoderKL, batch: dict
+    ):
+        pass
 
     def _make_txt_ids(self, prompt_embeds):
         b, n, d = prompt_embeds.shape

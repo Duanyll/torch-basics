@@ -4,6 +4,8 @@ from pydantic import field_validator, PositiveInt
 import torch
 from diffusers.models.transformers.transformer_flux import FluxTransformer2DModel
 from einops import repeat, rearrange, reduce
+
+from ..utils.common import ensure_trainable
 from .peft_lora import PeftLoraAdapter
 
 logger = logging.Logger(__name__)
@@ -53,10 +55,7 @@ class DConcatAdapter(PeftLoraAdapter):
             transformer.x_embedder = new_linear
 
         super().install_modules(transformer)
-        
-        # If x_embedder is not covered by LoRA, train full x_embedder
-        if not hasattr(transformer.x_embedder, "lora_A"):
-            transformer.x_embedder.requires_grad_(True)
+        ensure_trainable(transformer.x_embedder)
 
     def predict_velocity(
         self,

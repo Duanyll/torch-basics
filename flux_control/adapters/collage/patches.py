@@ -1,10 +1,12 @@
 from functools import partial
 import types
-from typing import Literal, Tuple
-from einops import rearrange
+from typing import Any, Literal, Tuple
+from einops import rearrange, repeat
 import torch
 import torch.nn as nn
-from diffusers.models.transformers.transformer_flux import FluxTransformer2DModel
+import torch.utils.checkpoint
+from diffusers import FluxTransformer2DModel
+from diffusers.models.modeling_outputs import Transformer2DModelOutput
 from diffusers.models.embeddings import TimestepEmbedding
 
 
@@ -21,16 +23,14 @@ def patch_time_text_embed_init(module):
     module.local_guidance_embedder.linear_1.bias.data.zero_()
 
 
-def patch_time_text_embed_forward(self, timestep, guidance, pooled_projection):
-    if isinstance(pooled_projection, tuple):
-        has_local_guidance = True
-        pooled_projection, local_guidance = pooled_projection
-        # Local guidance: [B, N, D]
-    else:
-        has_local_guidance = False
-        local_guidance = None
-        # Local guidance: None
-
+def patch_time_text_embed_forward(
+    self,
+    timestep,
+    guidance,
+    pooled_projection,
+    local_guidance=None,
+    local_guidance_pad=None,
+):
     timesteps_proj = self.time_proj(timestep)
     timesteps_emb = self.timestep_embedder(
         timesteps_proj.to(dtype=pooled_projection.dtype)
@@ -46,7 +46,7 @@ def patch_time_text_embed_forward(self, timestep, guidance, pooled_projection):
     pooled_projections = self.text_embedder(pooled_projection)
     conditioning = time_guidance_emb + pooled_projections
 
-    if has_local_guidance:
+    if local_guidance is not None:
         b, n = local_guidance.shape
         local_guidance = rearrange(local_guidance, "b n -> (b n)")
         local_guidance_proj = self.time_proj(local_guidance)
@@ -54,6 +54,16 @@ def patch_time_text_embed_forward(self, timestep, guidance, pooled_projection):
             local_guidance_proj.to(dtype=pooled_projection.dtype)
         )
         local_guidance_emb = rearrange(local_guidance_emb, "(b n) d -> b n d", b=b, n=n)
+        if local_guidance_pad is not None:
+            b, n, d = local_guidance_emb.shape
+            device, dtype = local_guidance_emb.device, local_guidance_emb.dtype
+            local_guidance_emb = torch.cat(
+                [
+                    torch.zeros((b, local_guidance_pad, d), device=device, dtype=dtype),
+                    local_guidance_emb,
+                ],
+                dim=1,
+            )
         local_conditioning = conditioning[:, None, :] + local_guidance_emb
         return conditioning, local_conditioning
     else:
@@ -234,14 +244,180 @@ def patch_norm_out_forward(self, x, conditioning_embedding) -> torch.Tensor:
     return x
 
 
+def patch_transformer_forward(
+    self,
+    hidden_states,
+    encoder_hidden_states: Any,
+    pooled_projections,
+    timestep,
+    img_ids,
+    txt_ids,
+    guidance=None,
+    joint_attention_kwargs=None,
+    return_dict: bool = True,
+    src_hidden_states=None,
+    local_guidance=None,
+):
+    """
+    The [`FluxTransformer2DModel`] forward method.
+
+    Args:
+        hidden_states (`torch.FloatTensor` of shape `(batch size, channel, height, width)`):
+            Input `hidden_states`.
+        encoder_hidden_states (`torch.FloatTensor` of shape `(batch size, sequence_len, embed_dims)`):
+            Conditional embeddings (embeddings computed from the input conditions such as prompts) to use.
+        pooled_projections (`torch.FloatTensor` of shape `(batch_size, projection_dim)`): Embeddings projected
+            from the embeddings of input conditions.
+        timestep ( `torch.LongTensor`):
+            Used to indicate denoising step.
+        block_controlnet_hidden_states: (`list` of `torch.Tensor`):
+            A list of tensors that if specified are added to the residuals of transformer blocks.
+        joint_attention_kwargs (`dict`, *optional*):
+            A kwargs dictionary that if specified is passed along to the `AttentionProcessor` as defined under
+            `self.processor` in
+            [diffusers.models.attention_processor](https://github.com/huggingface/diffusers/blob/main/src/diffusers/models/attention_processor.py).
+        return_dict (`bool`, *optional*, defaults to `True`):
+            Whether or not to return a [`~models.transformer_2d.Transformer2DModelOutput`] instead of a plain
+            tuple.
+
+    Returns:
+        If `return_dict` is True, an [`~models.transformer_2d.Transformer2DModelOutput`] is returned, otherwise a
+        `tuple` where the first element is the sample tensor.
+    """
+
+    hidden_states = self.x_embedder(hidden_states)
+    if src_hidden_states is not None:
+        src_hidden_states = self.x_embedder_src(src_hidden_states)
+        hidden_states = torch.cat([src_hidden_states, hidden_states], dim=1)
+        src_hidden_states_len = src_hidden_states.shape[1]
+        del src_hidden_states
+    else:
+        src_hidden_states_len = 0
+
+    timestep = timestep.to(hidden_states.dtype) * 1000
+    if guidance is not None:
+        guidance = guidance.to(hidden_states.dtype) * 1000
+    else:
+        guidance = None
+    if local_guidance is not None:
+        local_guidance = local_guidance.to(hidden_states.dtype) * 1000
+
+    temb = self.time_text_embed(
+        timestep,
+        guidance,
+        pooled_projections,
+        local_guidance,
+        local_guidance_pad=src_hidden_states_len,
+    )
+    encoder_hidden_states = self.context_embedder(encoder_hidden_states)
+
+    ids = torch.cat((txt_ids, img_ids), dim=0)
+    image_rotary_emb = self.pos_embed(ids)
+
+    if (
+        joint_attention_kwargs is not None
+        and "ip_adapter_image_embeds" in joint_attention_kwargs
+    ):
+        ip_adapter_image_embeds = joint_attention_kwargs.pop("ip_adapter_image_embeds")
+        ip_hidden_states = self.encoder_hid_proj(ip_adapter_image_embeds)
+        joint_attention_kwargs.update({"ip_hidden_states": ip_hidden_states})
+
+    for index_block, block in enumerate(self.transformer_blocks):
+        if torch.is_grad_enabled() and self.gradient_checkpointing:
+
+            def create_custom_forward(module, return_dict=None):
+                def custom_forward(*inputs):
+                    if return_dict is not None:
+                        return module(*inputs, return_dict=return_dict)
+                    else:
+                        return module(*inputs)
+
+                return custom_forward
+
+            encoder_hidden_states, hidden_states = torch.utils.checkpoint.checkpoint(
+                create_custom_forward(block),
+                hidden_states,
+                encoder_hidden_states,
+                temb,
+                image_rotary_emb,
+                use_reentrant=False,
+            )  # type: ignore
+
+        else:
+            encoder_hidden_states, hidden_states = block(
+                hidden_states=hidden_states,
+                encoder_hidden_states=encoder_hidden_states,
+                temb=temb,
+                image_rotary_emb=image_rotary_emb,
+                joint_attention_kwargs=joint_attention_kwargs,
+            )
+
+    hidden_states = torch.cat([encoder_hidden_states, hidden_states], dim=1)
+
+    for index_block, block in enumerate(self.single_transformer_blocks):
+        if torch.is_grad_enabled() and self.gradient_checkpointing:
+
+            def create_custom_forward(module, return_dict=None):
+                def custom_forward(*inputs):
+                    if return_dict is not None:
+                        return module(*inputs, return_dict=return_dict)
+                    else:
+                        return module(*inputs)
+
+                return custom_forward
+
+            hidden_states = torch.utils.checkpoint.checkpoint(
+                create_custom_forward(block),
+                hidden_states,
+                temb,
+                image_rotary_emb,
+                use_reentrant=False,
+            )
+
+        else:
+            hidden_states = block(
+                hidden_states=hidden_states,
+                temb=temb,
+                image_rotary_emb=image_rotary_emb,
+                joint_attention_kwargs=joint_attention_kwargs,
+            )
+
+    hidden_states = hidden_states[:, encoder_hidden_states.shape[1] :, ...]  # type: ignore
+
+    hidden_states = self.norm_out(hidden_states, temb)
+    output = self.proj_out(hidden_states)
+    output = output[:, src_hidden_states_len:, ...]
+
+    if not return_dict:
+        return (output,)
+
+    return Transformer2DModelOutput(sample=output)
+
+
+@torch.no_grad()
 def apply_patches(
     transformer,
     double_layers: bool | list[int] = True,
     single_layers: bool | list[int] = False,
+    use_src: bool = True,
 ):
     """
     Apply patches to the FluxTransformer2DModel class.
     """
+    if use_src:
+        x_emb_in = 64
+        x_emb_out = transformer.x_embedder.out_features
+        new_linear = nn.Linear(
+            x_emb_in,
+            x_emb_out,
+            bias=transformer.x_embedder.bias is not None,
+            dtype=transformer.dtype,
+            device=transformer.device,
+        )
+        new_linear.weight.data = transformer.x_embedder.weight[:, :64].detach().clone()
+        new_linear.bias.data = transformer.x_embedder.bias.detach().clone()
+        transformer.x_embedder_src = new_linear
+
     patch_time_text_embed_init(transformer.time_text_embed)
     transformer.time_text_embed.forward = types.MethodType(
         patch_time_text_embed_forward, transformer.time_text_embed
@@ -277,3 +453,4 @@ def apply_patches(
     transformer.norm_out.forward = types.MethodType(
         patch_norm_out_forward, transformer.norm_out
     )
+    transformer.forward = types.MethodType(patch_transformer_forward, transformer)

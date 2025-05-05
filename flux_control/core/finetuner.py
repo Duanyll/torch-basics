@@ -239,12 +239,14 @@ class FluxFinetuner(FluxInference):
 
     _accelerator: Accelerator
     _ema: EMA | None = None
+    _transformer: Any = None
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-
         self._accelerator = self._make_accelerator()
+        self._device = self._accelerator.device
         self._initialize_logging(kwargs)
+        self._transformer = None  # Initialize _transformer as None
 
     def _make_accelerator(self) -> Accelerator:
         return Accelerator(
@@ -447,7 +449,7 @@ class FluxFinetuner(FluxInference):
         self._info(f"Resumed from checkpoint {self._resume_checkpoint_path}")
         return self._resume_checkpoint_step
 
-    def _train_step(self, transformer, batch) -> torch.Tensor:
+    def _train_step(self, batch) -> torch.Tensor:
         batch_size = batch["prompt_embeds"].shape[0]
         timesteps = compute_density_for_timestep_sampling(
             weighting_scheme=self.weighting_scheme,
@@ -456,7 +458,7 @@ class FluxFinetuner(FluxInference):
             logit_std=self.logit_std,
             mode_scale=self.mode_scale,
         ).to(device=batch["prompt_embeds"].device, dtype=self._weight_dtype)
-        if self._unwrap_model(transformer).config.guidance_embeds:
+        if self._unwrap_model(self._transformer).config.guidance_embeds:
             guidance = torch.full(
                 (batch_size,),
                 self.guidance_scale,
@@ -465,7 +467,7 @@ class FluxFinetuner(FluxInference):
             )
         else:
             guidance = None
-        loss = self.adapter.train_step(transformer, batch, timesteps, guidance)
+        loss = self.adapter.train_step(self._transformer, self._vae, batch, timesteps, guidance)
         weighting = compute_loss_weighting_for_sd3(
             weighting_scheme=self.weighting_scheme, sigmas=timesteps
         ).to(device=batch["prompt_embeds"].device, dtype=torch.float32)
@@ -508,9 +510,9 @@ class FluxFinetuner(FluxInference):
             self._accelerator.save_state(save_path)
             self._info(f"Saved checkpoint to {save_path}")
 
-    def _final_save(self, transformer):
+    def _final_save(self):
         if self._accelerator.is_main_process:
-            self._save_model_hook([transformer], [], self.output_dir)
+            self._save_model_hook([self._transformer], [], self.output_dir)
             self._info(f"Final model saved to {self.output_dir}")
 
     def _inspect_dtype(self, transformer):
@@ -519,13 +521,14 @@ class FluxFinetuner(FluxInference):
         self._info(f"Base layer dtype: {lora_layer.base_layer.weight.dtype}")
         self._info(f"LoRA layer dtype: {lora_layer.lora_A.default.weight.dtype}")
 
-    def _sample_and_log(self, transformer, global_step, progress):
+    def _sample_and_log(self, global_step, progress):
         if self._sample_batch is None:
             return
         if self._accelerator.is_main_process:
             for key, batch in self._sample_batch.items():
                 image = self.sampler.sample(
-                    transformer,
+                    self._transformer,
+                    self._vae,
                     self.adapter,
                     self._move_batch_to_device(batch, self._accelerator.device),
                     progress=progress,
@@ -548,39 +551,36 @@ class FluxFinetuner(FluxInference):
     def train(self):
         set_seed(self.seed)
 
-        if self._transformer is not None:
-            del self._transformer
-            self._transformer = None
-
-        transformer = self._make_transformer()
+        # Initialize self._transformer if not already loaded
+        if self._transformer is None:
+            self._transformer = self._make_transformer()
+            self._optimize_model(self._transformer)
+        if self._vae is None:
+            self._vae = self._make_vae()
+            self._vae.to(self._accelerator.device)
+            self.sampler.set_meta(device=self._accelerator.device, dtype=self._weight_dtype, vae_dtype=self._vae_dtype)
         self._accelerator.register_load_state_pre_hook(self._load_model_hook)
         self._accelerator.register_save_state_pre_hook(self._save_model_hook)
-        self._optimize_model(transformer)
 
-        optimizer = self._make_optimizer(transformer)
+        optimizer = self._make_optimizer(self._transformer)
         dataloader = self._make_dataloader()
         self._calculate_real_train_steps(dataloader)
         lr_scheduler = self._make_lr_scheduler(optimizer)
 
-        transformer, optimizer, dataloader, lr_scheduler = self._accelerator.prepare(
-            transformer, optimizer, dataloader, lr_scheduler
+        self._transformer, optimizer, dataloader, lr_scheduler = self._accelerator.prepare(
+            self._transformer, optimizer, dataloader, lr_scheduler
         )
-        self._make_ema(transformer)
+        self._make_ema(self._transformer)
 
         global_step = self._try_resume_from_checkpoint()
         starting_epoch = global_step // len(dataloader)
         self._info(f"Starting training from epoch {starting_epoch}")
 
         if self._accelerator.is_main_process:
-            if self._sample_batch is not None:
-                self.sampler.load_model(
-                    device=self._accelerator.device, dtype=self._weight_dtype
-                )
-                self._info(f"Loaded sampler model")
             progress = FluxFinetunerProgress()
             progress.start()
 
-            self._sample_and_log(transformer, global_step, progress)
+            self._sample_and_log(global_step, progress)
 
             task = progress.add_task(
                 description="[bold blue]Training",
@@ -592,20 +592,20 @@ class FluxFinetuner(FluxInference):
                 progress_type="train",
             )
 
-        transformer.train()
+        self._transformer.train()
         for epoch in range(starting_epoch, self._train_epochs):
             for step, batch in enumerate(dataloader):
                 if global_step > self._train_steps:
                     break
 
-                with self._accelerator.accumulate(transformer):
-                    loss = self._train_step(transformer, batch)
+                with self._accelerator.accumulate(self._transformer):
+                    loss = self._train_step(batch)
                     self._check_loss_validity(loss, global_step, batch)
                     self._accelerator.backward(loss)
 
                     if self._accelerator.sync_gradients:
                         self._accelerator.clip_grad_norm_(
-                            transformer.parameters(), self.max_grad_norm
+                            self._transformer.parameters(), self.max_grad_norm
                         )
 
                     optimizer.step()
@@ -625,14 +625,14 @@ class FluxFinetuner(FluxInference):
                 if self._accelerator.is_main_process and (
                     global_step % self.sample_steps == 0 or self.sample_steps == 1
                 ):
-                    transformer.eval()
+                    self._transformer.eval()
                     if self._ema is not None:
                         self._ema.apply_shadow()
-                    self._sample_and_log(transformer, global_step, progress)
+                    self._sample_and_log(global_step, progress)
                     if self._ema is not None:
                         self._ema.restore()
                     self._info(f"Sampled at step {global_step}")
-                    transformer.train()
+                    self._transformer.train()
 
                 if (
                     global_step % self.checkpointing_steps == 0
@@ -647,7 +647,6 @@ class FluxFinetuner(FluxInference):
         if self._accelerator.is_main_process:
             progress.stop()
 
-        self._final_save(transformer)
+        self._final_save()
         self._info("Training finished")
         self._accelerator.end_training()
-        self._transformer = transformer

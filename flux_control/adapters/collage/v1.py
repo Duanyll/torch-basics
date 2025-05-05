@@ -4,7 +4,7 @@ from typing import Literal, Tuple
 from pydantic import PositiveInt, model_validator
 import torch
 import torch.nn as nn
-from diffusers.models.transformers.transformer_flux import FluxTransformer2DModel
+from diffusers import FluxTransformer2DModel, AutoencoderKL
 import einops
 import random
 
@@ -205,6 +205,7 @@ class CollageAdapter(DConcatAdapter):
     def train_step(
         self,
         transformer: FluxTransformer2DModel,
+        vae: AutoencoderKL,
         batch: dict,
         timestep: torch.Tensor,
         guidance: torch.Tensor | None,
@@ -240,7 +241,7 @@ class CollageAdapter(DConcatAdapter):
                     device=device, dtype=dtype
                 )
 
-        return super().train_step(transformer, batch, timestep, guidance)
+        return super().train_step(transformer, vae, batch, timestep, guidance)
 
     def _pack_mask(self, mask: torch.Tensor) -> torch.Tensor:
         """

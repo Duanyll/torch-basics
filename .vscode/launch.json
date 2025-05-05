@@ -18,8 +18,11 @@
             "args": [
                 "-m",
                 "flux_control.scripts.train_lora",
-                "flux_control/configs/peft_lora.toml"
-            ]
+                "flux_control/configs/test_collage_v2.toml"
+            ],
+            "env": {
+                "HF_ENDPOINT": "https://hf-mirror.com"
+            }
         },
         {
             "name": "Python Debugger: Collage Pipeline Single",

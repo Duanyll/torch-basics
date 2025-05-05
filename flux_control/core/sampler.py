@@ -1,8 +1,8 @@
 import math
-from typing import cast, Optional
+from typing import Literal, cast, Optional
+from einops import rearrange
 from pydantic import BaseModel
-from diffusers.pipelines.flux.pipeline_flux import FluxPipeline
-from diffusers.models.transformers.transformer_flux import FluxTransformer2DModel
+from diffusers import FluxTransformer2DModel, AutoencoderKL
 import torch
 from PIL import Image
 from rich.progress import Progress
@@ -15,41 +15,33 @@ class FluxSampler(BaseModel):
     guidance_scale: float = 3.5
     do_true_cfg: bool = False
     use_timestep_shift: bool = True
-    vae_on_cpu: bool = False
     pretrained_model_id: str = "black-forest-labs/FLUX.1-dev"
     height: int = 1024
     width: int = 1024
     infer_size_from: str | None = None
     infer_size_ratio: int = 1
     seed: int = 0
-
-    _pipe: FluxPipeline
-    _dtype: torch.dtype
-    _device: torch.device
-    _vae_dtype: torch.dtype
-    _vae_device: torch.device
-
-    def load_model(self, dtype=torch.bfloat16, device=torch.device("cpu")):
-        self._dtype = dtype
+    
+    base_image_seq_len: int = 256
+    base_shift: float = 0.5
+    max_image_seq_len: int = 4096
+    max_shift: float = 1.15
+    shift: float = 3.0
+    
+    _device: torch.device = torch.device("cuda")
+    _dtype: torch.dtype = torch.bfloat16
+    _vae_dtype: torch.dtype = torch.float32
+    
+    def set_meta(self, device: torch.device, dtype: torch.dtype, vae_dtype: torch.dtype):
         self._device = device
-        self._vae_dtype = torch.float32 if self.vae_on_cpu else dtype
-        self._pipe = cast(
-            FluxPipeline,
-            FluxPipeline.from_pretrained(
-                self.pretrained_model_id,
-                torch_dtype=self._vae_dtype,
-                transformer=None,
-                text_encoder=None,
-                text_encoder_2=None,
-            ),
-        )
-        self._vae_device = torch.device("cpu") if self.vae_on_cpu else device
-        self._pipe.vae.to(self._vae_device)
+        self._dtype = dtype
+        self._vae_dtype = vae_dtype
 
     @torch.no_grad()
     def sample(
         self,
         transformer: FluxTransformer2DModel,
+        vae: AutoencoderKL,
         adapter: BaseAdapter,
         batch: dict,
         progress: Optional[Progress] = None,
@@ -81,10 +73,12 @@ class FluxSampler(BaseModel):
                 total=self.steps,
                 progress_type="sample",
             )
+        
+        batch["noisy_latents"] = latent
+        adapter.prepare_sample(transformer, vae, batch)
 
         for i in range(self.steps):
             ti = timesteps[i : i + 1]
-            batch["noisy_latents"] = latent
             noise_pred = adapter.predict_velocity(
                 transformer, batch, ti, guidance
             ).float()
@@ -101,11 +95,12 @@ class FluxSampler(BaseModel):
 
             latent = latent + noise_pred * (timesteps[i + 1] - timesteps[i])
             latent = latent.to(self._dtype)
+            batch["noisy_latents"] = latent
 
             if progress is not None:
                 progress.update(task, advance=1)
 
-        image = self._latent_to_image(latent)
+        image = self._latent_to_image(vae, latent)
 
         if progress is not None:
             progress.remove_task(task)
@@ -124,23 +119,24 @@ class FluxSampler(BaseModel):
             generator=generator,
         )
 
-    def _latent_to_image(self, latent) -> Image.Image:
-        latent = (
-            latent / self._pipe.vae.config.scaling_factor
-            + self._pipe.vae.config.shift_factor
-        )
-        latent = latent.to(device=self._vae_device, dtype=self._vae_dtype)
-        image = self._pipe.vae.decode(latent, return_dict=False)[0]
-        return self._pipe.image_processor.postprocess(image, output_type="pil")[0] # type: ignore
+    def _latent_to_image(self, vae, latent) -> Image.Image:
+        latent = latent / vae.config.scaling_factor + vae.config.shift_factor
+        latent = latent.to(self._vae_dtype)
+        image = vae.decode(latent, return_dict=False)[0]
+        image = rearrange(image, "1 c h w -> h w c")
+        image = torch.clamp(image, -1, 1)
+        image = ((image + 1) / 2) * 255
+        image = image.to(torch.uint8)
+        image = Image.fromarray(image.cpu().numpy())
+        return image
 
     def _make_timesteps(self, latent_len: int):
         t = torch.linspace(1.0, 0.0, self.steps + 1, device=self._device)
         if self.use_timestep_shift:
-            scfg = self._pipe.scheduler.config
-            m = (scfg.max_shift - scfg.base_shift) / (
-                scfg.max_image_seq_len - scfg.base_image_seq_len
+            m = (self.max_shift - self.base_shift) / (
+                self.max_image_seq_len - self.base_image_seq_len
             )
-            b = scfg.base_shift - m * scfg.base_image_seq_len
+            b = self.base_shift - m * self.base_image_seq_len
             mu = m * latent_len + b
             t = math.exp(mu) / (math.exp(mu) + (1 / t - 1))
         t = t.to(self._dtype)

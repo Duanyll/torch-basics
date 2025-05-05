@@ -13,6 +13,7 @@ from rich.progress import (
 )
 from diffusers.models.transformers.transformer_flux import FluxTransformer2DModel
 from diffusers.pipelines.flux.pipeline_flux_control import FluxControlPipeline
+from diffusers.models.autoencoders.autoencoder_kl import AutoencoderKL
 from ..adapters import BaseAdapter, parse_adapter_config
 from ..utils.upcasting import (
     apply_layerwise_upcasting,
@@ -30,6 +31,7 @@ class FluxInference(BaseModel):
     sampler: FluxSampler
     pretrained_model_id: str = "black-forest-labs/FLUX.1-dev"
     base_precision: Literal["fp32", "bf16", "fp8-upcast"] = "fp8-upcast"
+    vae_precision: Literal["fp32", "bf16"] = "bf16"
     """
     Precision for the base transformer model.
     
@@ -49,9 +51,11 @@ class FluxInference(BaseModel):
 
     _weight_dtype: torch.dtype = torch.bfloat16
     _trainable_dtype: torch.dtype = torch.bfloat16
+    _vae_dtype: torch.dtype = torch.float32
     _transformer: Any = None
-    _transformer_device: Any = None
-
+    _vae: Any = None
+    _device: Any = None
+    
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._weight_dtype = (
@@ -59,6 +63,9 @@ class FluxInference(BaseModel):
         )
         self._trainable_dtype = (
             torch.float32 if self.trainable_precision == "fp32" else torch.bfloat16
+        )
+        self._vae_dtype = (
+            torch.float32 if self.vae_precision == "fp32" else torch.bfloat16
         )
 
     def _info(self, message: str):
@@ -80,6 +87,19 @@ class FluxInference(BaseModel):
             f"Transformer model created with {self.pretrained_model_id} and {self.adapter.__class__.__name__}"
         )
         return transformer
+    
+    def _make_vae(self) -> AutoencoderKL:
+        vae = cast(
+            AutoencoderKL,
+            AutoencoderKL.from_pretrained(
+                self.pretrained_model_id,
+                subfolder="vae",
+                torch_dtype=self._vae_dtype,
+            ),
+        )
+        vae.requires_grad_(False)
+        self._info(f"VAE model created with {self.pretrained_model_id}")
+        return vae
 
     def _optimize_model(self, transformer):
         if self.base_precision == "fp8-upcast":
@@ -124,8 +144,11 @@ class FluxInference(BaseModel):
         self._load_weights(self._transformer, input_dir)
         self._transformer.to(device)
         self._transformer.eval()
-        self._transformer_device = device
-        self.sampler.load_model(dtype=self._weight_dtype, device=device)
+        self._device = device
+        self.sampler.set_meta(device=self._device, dtype=self._weight_dtype, vae_dtype=self._vae_dtype)
+        self._vae = self._make_vae()
+        self._vae.to(device)
+        self._vae.eval()
 
     def sample(self, batch: dict):
         with Progress(
@@ -137,8 +160,9 @@ class FluxInference(BaseModel):
         ) as progress:
             image = self.sampler.sample(
                 self._transformer,
+                self._vae,
                 self.adapter,
-                self._move_batch_to_device(batch, self._transformer_device),
+                self._move_batch_to_device(batch, self._device),
                 progress,
             )
         return image
