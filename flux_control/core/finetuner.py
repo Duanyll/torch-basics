@@ -324,7 +324,7 @@ class FluxFinetuner(FluxInference):
         if self._ema is not None:
             ema_layers = self._ema.state_dict()
             FluxControlPipeline.save_lora_weights(
-                os.path.join(output_dir, "ema.safetensors"), transformer_lora_layers=ema_layers
+                os.path.join(output_dir, "ema"), transformer_lora_layers=ema_layers
             )
             self._info(f"Saved EMA model to {output_dir}")
 
@@ -341,7 +341,7 @@ class FluxFinetuner(FluxInference):
         self._load_weights(model, input_dir)
         
         if self._ema is not None:
-            ema_state_dict = FluxControlPipeline.lora_state_dict(os.path.join(input_dir, "ema.safetensors"))
+            ema_state_dict = FluxControlPipeline.lora_state_dict(os.path.join(input_dir, "ema"))
             self._ema.load_state_dict(ema_state_dict)
             self._ema.to(self._accelerator.device)
             self._info(f"Loaded EMA model from {input_dir}")

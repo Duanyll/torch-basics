@@ -15,7 +15,7 @@ class FluxSampler(BaseModel):
     guidance_scale: float = 3.5
     do_true_cfg: bool = False
     use_timestep_shift: bool = True
-    vae_on_cpu: bool = True
+    vae_on_cpu: bool = False
     pretrained_model_id: str = "black-forest-labs/FLUX.1-dev"
     height: int = 1024
     width: int = 1024
