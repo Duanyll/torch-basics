@@ -1,3 +1,4 @@
+from ast import parse
 import os
 import tomllib
 import yaml
@@ -19,6 +20,7 @@ console = Console()
 def main(
     config_path: str,
     input_path,
+    out_name="output.png",
     checkpoint_dir=None,
     device="cuda",
     config_overrides: Optional[str] = None,
@@ -58,7 +60,7 @@ def main(
         with open(file, "rb") as f:
             data = pickle.load(f)
         image = flux.sample(data)
-        save_file = os.path.join(os.path.dirname(file), os.path.basename(file) + ".png")
+        save_file = os.path.join(os.path.dirname(file), out_name)
         image.save(save_file)
         console.log(f"Saved image to {save_file}")
 
@@ -67,6 +69,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Inference LoRA for Flux")
     parser.add_argument("config_path", type=str, help="Path to the config file")
     parser.add_argument("input_path", type=str, help="Path to the input file or directory")
+    parser.add_argument(
+        "-o",
+        "--output_name",
+        type=str,
+        default="output.png",
+        help="Name of the output file (default: output.png)",
+    )
     parser.add_argument(
         "-c",
         "--checkpoint_dir",
@@ -92,11 +101,12 @@ if __name__ == "__main__":
     
     try:
         main(
-            args.config_path,
-            args.checkpoint_dir,
-            args.input_path,
-            args.device,
-            args.config_overrides,
+            config_path=args.config_path,
+            input_path=args.input_path,
+            out_name=args.output_name,
+            checkpoint_dir=args.checkpoint_dir,
+            device=args.device,
+            config_overrides=args.config_overrides,
         )
     except Exception:
         console.print_exception()
