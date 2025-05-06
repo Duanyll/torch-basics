@@ -1,3 +1,5 @@
+import shutil
+from os import write
 from pathlib import Path
 import logging
 import lmdb
@@ -6,6 +8,7 @@ import torch
 import numpy as np
 import matplotlib.pyplot as plt
 from einops import rearrange
+from PIL import Image
 
 if __name__ == "__main__":
     from ..utils.logging import setup_rich_logging
@@ -19,7 +22,7 @@ from ..utils.common import unpack_bool_tensor
 logger = logging.getLogger(__name__)
 
 
-def visualize_collage(sample: dict, device="cuda", output_file="output.png"):
+def visualize_collage(sample: dict, output_dir: Path, device="cuda"):
     """
     Visualize a sample dictionary containing images, masks, and confidence maps.
 
@@ -61,12 +64,15 @@ def visualize_collage(sample: dict, device="cuda", output_file="output.png"):
     fig.suptitle("Collage Visualization", fontsize=16)
     axs = np.array(axs).flatten() if n_items > 1 else [axs]
 
+    decoded_latents = {}
+
     for i, (key, value) in enumerate(items_to_plot):
         try:
             if key in ["src", "tgt", "splat", "affine", "hint", "coarse"]:
                 # Handle images
                 image = decode_latents(value.to(device)).cpu().float()
                 image = torch.clamp(image, 0, 1)
+                decoded_latents[key] = image
                 axs[i].imshow(image.permute(1, 2, 0).numpy())
                 axs[i].set_title(key)
                 axs[i].axis("off")
@@ -93,9 +99,25 @@ def visualize_collage(sample: dict, device="cuda", output_file="output.png"):
         axs[j].axis("off")
 
     plt.tight_layout()
-    plt.savefig(output_file, bbox_inches="tight")
+    plt.savefig(str(output_dir / f"all.png"), bbox_inches="tight")
     plt.close(fig)
-    logger.info(f"Saved visualization to {output_file}")
+
+    for key, image in decoded_latents.items():
+        image = rearrange(image, "c h w -> h w c")
+        image = (image * 255).byte().cpu().numpy()
+        if f"mask_{key}" in sample:
+            mask = unpack_bool_tensor(*sample[f"mask_{key}"]).byte() * 255
+            mask = rearrange(mask, "h w -> h w 1").cpu().numpy()
+            image = np.concatenate((image, mask), axis=-1)
+            image_pil = Image.fromarray(image, mode="RGBA")
+        else:
+            image_pil = Image.fromarray(image)
+        image_pil.save(str(output_dir / f"{key}.png"))
+
+    if "foreground" in sample:
+        fg = (unpack_bool_tensor(*sample["foreground"]).byte() * 255).cpu().numpy()
+        fg_pil = Image.fromarray(fg, mode="L")
+        fg_pil.save(str(output_dir / "foreground.png"))
 
 
 def load_pkl(pkl_path: str) -> dict:
@@ -131,6 +153,11 @@ def main():
         default="cuda",
         help="Device to process tensors",
     )
+    parser.add_argument(
+        "--clear",
+        action="store_true",
+        help="Clear the output directory before saving",
+    )
 
     args = parser.parse_args()
 
@@ -140,6 +167,9 @@ def main():
 
     # Ensure output directory exists
     output_dir = Path(args.output_dir)
+    if args.clear and output_dir.exists():
+        logger.info(f"Clearing output directory: {output_dir}")
+        shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     load_hf_pipeline(args.device)  # Load the pipeline once at the start
@@ -153,8 +183,7 @@ def main():
 
         logger.info(f"Processing PKL file: {pkl_path}")
         sample = load_pkl(str(pkl_path))
-        output_file = output_dir / f"{pkl_path.stem}.png"
-        visualize_collage(sample, device=args.device, output_file=str(output_file))
+        visualize_collage(sample, device=args.device, output_dir=output_dir)
 
     else:
         # Process LMDB
@@ -183,17 +212,16 @@ def main():
                     continue
                 sample = pickle.loads(value)
 
-                # Save as PKL
-                pkl_file = output_dir / f"{key.decode()}.pkl"
-                with open(pkl_file, "wb") as f:
+                key = key.decode()
+                sample_dir = output_dir / key
+                sample_dir.mkdir(parents=True, exist_ok=True)
+                output_pkl = sample_dir / f"sample.pkl"
+                with open(output_pkl, "wb") as f:
                     f.write(value)
-                logger.info(f"Saved PKL to {pkl_file}")
-
-                # Visualize
-                output_file = output_dir / f"{key.decode()}.png"
-                visualize_collage(
-                    sample, device=args.device, output_file=str(output_file)
-                )
+                logger.info(f"Saved sample to {output_pkl}")
+                
+                visualize_collage(sample, device=args.device, output_dir=sample_dir)
+                
 
 
 if __name__ == "__main__":

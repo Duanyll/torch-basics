@@ -20,7 +20,6 @@ def main(
     config_path: str,
     checkpoint_dir: str,
     input_path,
-    output_path=None,
     device="cuda",
     config_overrides: Optional[str] = None,
 ):
@@ -45,21 +44,21 @@ def main(
     flux = FluxInference(**config)
     flux.load_finetuned_model(checkpoint_dir, device=torch.device(device))
     if os.path.isdir(input_path):
-        if output_path is None:
-            output_path = input_path
-        files = [
-            os.path.join(f, input_path)
-            for f in os.listdir(input_path)
-            if f.endswith(".pkl")
-        ]
+        # Recursively find all .pkl files in the directory
+        files = []
+        for root, _, filenames in os.walk(input_path):
+            for filename in filenames:
+                if filename.endswith(".pkl"):
+                    files.append(os.path.join(root, filename))
+        if not files:
+            raise ValueError(f"No .pkl files found in directory {input_path}.")
     else:
-        output_path = os.path.dirname(input_path)
         files = [input_path]
     for file in files:
         with open(file, "rb") as f:
             data = pickle.load(f)
         image = flux.sample(data)
-        save_file = os.path.join(output_path, os.path.basename(file) + ".png")
+        save_file = os.path.join(os.path.dirname(file), os.path.basename(file) + ".png")
         image.save(save_file)
         console.log(f"Saved image to {save_file}")
 
@@ -69,13 +68,6 @@ if __name__ == "__main__":
     parser.add_argument("config_path", type=str, help="Path to the config file")
     parser.add_argument("checkpoint_dir", type=str, help="Path to the checkpoint directory")
     parser.add_argument("input_path", type=str, help="Path to the input file or directory")
-    parser.add_argument(
-        "-o",
-        "--output_path",
-        type=str,
-        default=None,
-        help="Path to the output directory",
-    )
     parser.add_argument(
         "-d",
         "--device",
@@ -97,7 +89,6 @@ if __name__ == "__main__":
             args.config_path,
             args.checkpoint_dir,
             args.input_path,
-            args.output_path,
             args.device,
             args.config_overrides,
         )

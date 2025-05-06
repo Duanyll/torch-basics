@@ -75,12 +75,13 @@ class PeftLoraAdapter(BaseAdapter):
         lora_state_dict = {}
         other_state_dict = {}
         for k, v in state_dict.items():
-            if k.startswith("transformer."):
-                k_trim = k.replace("transformer.", "")
-                if "lora" in k_trim:
-                    lora_state_dict[k_trim] = v
-                else:
-                    other_state_dict[k] = v
+            k = k.replace("transformer.", "")
+            k = k.replace("module.", "")
+            k = k.replace("default.", "")
+            if "lora" in k:
+                lora_state_dict[k] = v
+            else:
+                other_state_dict[k] = v
         incompatible_keys = set_peft_model_state_dict(
             transformer, lora_state_dict, adapter_name="default"
         )
