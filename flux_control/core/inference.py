@@ -55,7 +55,7 @@ class FluxInference(BaseModel):
     _transformer: Any = None
     _vae: Any = None
     _device: Any = None
-    
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._weight_dtype = (
@@ -87,7 +87,7 @@ class FluxInference(BaseModel):
             f"Transformer model created with {self.pretrained_model_id} and {self.adapter.__class__.__name__}"
         )
         return transformer
-    
+
     def _make_vae(self) -> AutoencoderKL:
         vae = cast(
             AutoencoderKL,
@@ -134,14 +134,19 @@ class FluxInference(BaseModel):
                 new_batch[k] = v
         return new_batch
 
-    def load_finetuned_model(self, input_dir: str, device: torch.device):
+    def load_model(
+        self,
+        device: torch.device,
+        input_dir: str | None = None,
+    ):
         """
         Load the finetuned model from the given directory.
         """
         self._info(f"Loading finetuned model from {input_dir}")
         self._transformer = self._make_transformer()
         self._optimize_model(self._transformer)
-        self._load_weights(self._transformer, input_dir)
+        if input_dir is not None:
+            self._load_weights(self._transformer, input_dir)
         self._transformer.to(device)
         self._transformer.eval()
         self._device = device

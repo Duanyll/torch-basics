@@ -81,11 +81,6 @@ class BaseAdapter(BaseModel):
         """
         b, c, h, w = batch["noisy_latents"].shape
 
-        if not "txt_ids" in batch:
-            batch["txt_ids"] = self._make_txt_ids(batch["prompt_embeds"])
-        if not "img_ids" in batch:
-            batch["img_ids"] = self._make_img_ids(batch["noisy_latents"])
-
         model_pred = transformer(
             hidden_states=self._pack_latents(batch["noisy_latents"]),
             timestep=timestep,
@@ -157,7 +152,10 @@ class BaseAdapter(BaseModel):
     def prepare_sample(
         self, transformer: FluxTransformer2DModel, vae: AutoencoderKL, batch: dict
     ):
-        pass
+        if not "txt_ids" in batch:
+            batch["txt_ids"] = self._make_txt_ids(batch["prompt_embeds"])
+        if not "img_ids" in batch:
+            batch["img_ids"] = self._make_img_ids(batch["noisy_latents"])
 
     def _make_txt_ids(self, prompt_embeds):
         b, n, d = prompt_embeds.shape

@@ -18,8 +18,8 @@ console = Console()
 
 def main(
     config_path: str,
-    checkpoint_dir: str,
     input_path,
+    checkpoint_dir=None,
     device="cuda",
     config_overrides: Optional[str] = None,
 ):
@@ -42,7 +42,7 @@ def main(
         config = deep_merge_dicts(config, overrides)
 
     flux = FluxInference(**config)
-    flux.load_finetuned_model(checkpoint_dir, device=torch.device(device))
+    flux.load_model(device=torch.device(device), input_dir=checkpoint_dir)
     if os.path.isdir(input_path):
         # Recursively find all .pkl files in the directory
         files = []
@@ -66,8 +66,14 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Inference LoRA for Flux")
     parser.add_argument("config_path", type=str, help="Path to the config file")
-    parser.add_argument("checkpoint_dir", type=str, help="Path to the checkpoint directory")
     parser.add_argument("input_path", type=str, help="Path to the input file or directory")
+    parser.add_argument(
+        "-c",
+        "--checkpoint_dir",
+        type=str,
+        default=None,
+        help="Path to the checkpoint directory (default: None, will use base model)",
+    )
     parser.add_argument(
         "-d",
         "--device",
