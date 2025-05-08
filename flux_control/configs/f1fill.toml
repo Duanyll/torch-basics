@@ -1,0 +1,15 @@
+pretrained_model_id = "black-forest-labs/FLUX.1-Fill-dev"
+
+base_precision = "fp8-upcast"
+trainable_precision = "bf16"
+allow_tf32 = true
+
+[adapter]
+type = "f1_fill"
+enforce_mask = false
+
+[sampler]
+seed = 1024
+infer_size_from = "confidence"
+infer_size_ratio = 16
+guidance_scale = 3.5

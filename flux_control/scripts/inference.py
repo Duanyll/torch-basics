@@ -91,7 +91,6 @@ if __name__ == "__main__":
         help="Device to use for inference (default: cuda)",
     )
     parser.add_argument(
-        "-o",
         "--config_overrides",
         type=str,
         default=None,

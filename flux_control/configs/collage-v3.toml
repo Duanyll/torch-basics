@@ -1,0 +1,54 @@
+output_dir = "/runs/collage-v3"
+logging_dir = "/runs"
+experiment_name = "collage-v3"
+pretrained_model_id = "black-forest-labs/FLUX.1-dev"
+checkpointing_steps = 2000
+sample_steps = 1000
+sample_pickle_dir = "/data/openvid/sample-v2"
+
+accelerator_amp_mode = "no"
+base_precision = "fp8-upcast"
+trainable_precision = "bf16"
+allow_tf32 = true
+gradient_checkpointing = true
+use_8bit_adam = true
+
+seed = 42
+gradient_accumulation_steps = 2
+train_steps = 20000
+learning_rate = 5e-5
+lr_scheduler = "constant"
+weighting_scheme = "logit_normal"
+
+guidance_scale = 3.5
+use_ema = true
+ema_decay = 0.999
+
+[dataset]
+type = "multi"
+
+[dataset.base]
+type = "lmdb"
+path = "/data/openvid/lmdb-v2-base"
+db_name = "result"
+
+[dataset.extra]
+type = "lmdb"
+path = "/data/openvid/lmdb-v2-extra"
+db_name = "result"
+
+[adapter]
+type = "collage_v2"
+lge_double_layers = true
+lge_single_layers = true
+use_foreground = true
+use_hint = false
+use_src = false
+src_downscale = 2
+rank = 128
+
+[sampler]
+seed = 1024
+infer_size_from = "confidence"
+infer_size_ratio = 16
+guidance_scale = 3.5

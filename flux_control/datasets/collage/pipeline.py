@@ -65,7 +65,7 @@ def process_video_sample(video, prompt, device="cuda", cfg=CollageConfig()):
         "affine": save_image(affine),
         "hint": save_image(hint),
         "mask_splat": save_mask(mask_splat),
-        "mask_affine": save_mask(mask_affine_src),
+        "mask_affine": save_mask(mask_affine_tgt),
         "foreground": save_mask(foreground),
         "confidence": confidence.to(torch.bfloat16).cpu(),
         "prompt_embeds": prompt_embeds.cpu(),

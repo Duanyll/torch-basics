@@ -3,6 +3,7 @@ from .peft_lora import PeftLoraAdapter
 from .d_concat import DConcatAdapter
 from .n_concat import NConcatAdapter
 from .collage import CollageAdapter, CollageAdapterV2
+from .f1_fill import Flux1FillAdapter
 
 ADAPTER_MAP = {
     "peft_lora": PeftLoraAdapter,
@@ -10,6 +11,7 @@ ADAPTER_MAP = {
     "n_concat": NConcatAdapter,
     "collage": CollageAdapter,
     "collage_v2": CollageAdapterV2,
+    "f1_fill": Flux1FillAdapter,
 }
 
 def parse_adapter_config(adapter_config) -> BaseAdapter:

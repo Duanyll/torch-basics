@@ -148,12 +148,12 @@ class CollageAdapterV2(DConcatAdapter):
     
     def prepare_sample(self, transformer: FluxTransformer2DModel, vae: AutoencoderKL, batch: dict):
         if "coarse" not in batch:
-            if "splat" in batch:
-                batch["coarse"] = batch["splat"]
-                batch["mask_coarse"] = batch["mask_splat"]
-            else:
+            if "affine" in batch:
                 batch["coarse"] = batch["affine"]
                 batch["mask_coarse"] = batch["mask_affine"]
+            else:
+                batch["coarse"] = batch["splat"]
+                batch["mask_coarse"] = batch["mask_splat"]
 
         if "hint" not in batch:
             batch["hint"] = torch.zeros_like(batch["noisy_latents"])

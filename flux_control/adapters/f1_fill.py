@@ -21,7 +21,7 @@ class Flux1FillAdapter(BaseAdapter):
         w_len = w // self.patch_size
 
         mask = 1 - self._pack_mask(batch["mask_coarse"])
-        
+
         inputs = pack([
             self._pack_latents(batch["noisy_latents"]),
             self._pack_latents(batch["coarse"]),
@@ -50,7 +50,7 @@ class Flux1FillAdapter(BaseAdapter):
         if "coarse" not in batch:
             if "affine" in batch:
                 batch["coarse"] = batch["affine"]
-                batch["mask_coarse"] = batch["mask_affine"]
+                batch["mask_coarse"] = self._mask_hotfix(vae, batch["affine"])
             else:
                 batch["coarse"] = batch["splat"]
                 batch["mask_coarse"] = batch["mask_splat"]
@@ -65,3 +65,13 @@ class Flux1FillAdapter(BaseAdapter):
             mask = unpack_bool_tensor(*mask)
         mask = mask.to(torch.bfloat16)
         return rearrange(mask, "b (h ph) (w pw) -> b (ph pw) h w", ph=8, pw=8)
+
+    def _mask_hotfix(self, vae, affine):
+        # Hotfix for wrong mask
+        latent = (affine / vae.config.scaling_factor) + vae.config.shift_factor
+        image = vae.decode(latent, return_dict=False)[0]
+        # Scale [-1, 1] to [0, 1]
+        image = (image + 1) / 2 # 1 3 H W
+        # Recreate mask for RGB > (0.02, 0.02, 0.02)
+        mask = reduce(image > 0.02, "1 c h w -> h w", "any")
+        return mask
